@@ -1,17 +1,16 @@
-import { Router, Response } from 'express'
-import { getFirestore, FieldValue } from 'firebase-admin/firestore'
+import { Router, Request, Response } from 'express'
+import { getFirestore } from 'firebase-admin/firestore'
 import { AuthRequest } from '../types'
-import { verifyToken, isAdmin } from '../middleware/auth'
+import { verifyToken } from '../middleware/auth'
 
 const router = Router()
 
-// GET /tiers?appId=echolima — hent alle tiers for en app (caches i appen)
-router.get('/', verifyToken, async (req: AuthRequest, res: Response) => {
+// GET /tiers — hent alle tiers (offentlig)
+router.get('/', async (req: Request, res: Response) => {
   try {
-    const appId = (req.query.appId as string) ?? 'echolima'
     const snap = await getFirestore()
       .collection('tiers')
-      .where('appId', '==', appId)
+      .orderBy('order')
       .get()
 
     const tiers = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))
@@ -22,13 +21,12 @@ router.get('/', verifyToken, async (req: AuthRequest, res: Response) => {
   }
 })
 
-// GET /tiers/:tierId — hent specifik tier
-router.get('/:tierId', verifyToken, async (req: AuthRequest, res: Response) => {
+// GET /tiers/:tierId — hent specifik tier (offentlig)
+router.get('/:tierId', async (req: Request, res: Response) => {
   try {
-    const appId = (req.query.appId as string) ?? 'echolima'
     const snap = await getFirestore()
       .collection('tiers')
-      .doc(`${appId}_${req.params.tierId}`)
+      .doc(req.params.tierId)
       .get()
 
     if (!snap.exists) {
@@ -42,30 +40,28 @@ router.get('/:tierId', verifyToken, async (req: AuthRequest, res: Response) => {
   }
 })
 
-// POST /tiers/check — tjek om bruger må udføre en handling
+// POST /tiers/check — tjek om bruger må udføre en handling (kræver auth)
 router.post('/check', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const uid = req.user!.uid
-    const { action, appId = 'echolima' } = req.body
-    // action: 'transcription' | 'visionCall' | 'aiSummary'
+    const { action } = req.body
 
     const db = getFirestore()
     const userSnap = await db.collection('users').doc(uid).get()
-    const tierId = userSnap.data()?.tierId ?? 'free'
+    const tierId = userSnap.data()?.tierId ?? 'foxtrot'
 
     const [tierSnap, usageSnap] = await Promise.all([
-      db.collection('tiers').doc(`${appId}_${tierId}`).get(),
-      db.collection('users').doc(uid).collection('usage').doc(appId).get()
+      db.collection('tiers').doc(tierId).get(),
+      db.collection('users').doc(uid).collection('usage').doc('echolima').get()
     ])
 
-    const limits = tierSnap.data()?.limits ?? {}
+    const tier = tierSnap.data() ?? {}
     const usage = usageSnap.data() ?? {}
 
-    // Map action til felt-navne
     const fieldMap: Record<string, string> = {
-      transcription: 'transcriptions',
-      visionCall: 'visionCalls',
-      aiSummary: 'aiSummaries'
+      transcription: 'transcriptionsPerMonth',
+      visionCall: 'visionCallsPerMonth',
+      aiSummary: 'aiSummariesPerMonth'
     }
     const field = fieldMap[action]
     if (!field) {
@@ -73,18 +69,13 @@ router.post('/check', verifyToken, async (req: AuthRequest, res: Response) => {
       return
     }
 
-    const limit = limits[field] ?? 0
-    const used = usage[field] ?? 0
+    const limit = tier[field] ?? 0
+    const usageField = field.replace('PerMonth', '')
+    const used = usage[usageField] ?? 0
 
-    // -1 = ubegrænset (Pro/Enterprise)
     const allowed = limit === -1 || used < limit
 
-    res.json({
-      allowed,
-      used,
-      limit,
-      tierId
-    })
+    res.json({ allowed, used, limit, tierId })
   } catch (err) {
     console.error('tiers/check fejl:', err)
     res.status(500).json({ error: 'Serverfejl' })
