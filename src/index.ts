@@ -13,6 +13,11 @@ import appsRoutes from './routes/apps'
 
 dotenv.config()
 
+// Debug: log available env var keys (not values)
+console.log('[DEBUG] Environment variable keys:', Object.keys(process.env).join(', '))
+console.log('[DEBUG] FIREBASE_SERVICE_ACCOUNT_JSON present:', !!process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
+console.log('[DEBUG] ADMIN_EMAIL present:', !!process.env.ADMIN_EMAIL)
+
 // Firebase Admin initialisering via service account JSON
 const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
 if (!serviceAccountJson) {
