@@ -38,8 +38,8 @@ router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, re
     const priceId = getPriceId(tierId)
     const uid = req.user?.uid
     if (!uid) { res.status(401).json({ error: 'Ikke autoriseret' }); return }
-    const successUrl = process.env.STRIPE_SUCCESS_URL ?? 'https://echolima.app/payment/success'
-    const cancelUrl  = process.env.STRIPE_CANCEL_URL  ?? 'https://echolima.app/payment/cancel'
+    const successUrl = process.env.STRIPE_SUCCESS_URL ?? 'https://api.echolima.app/payment/success'
+    const cancelUrl  = process.env.STRIPE_CANCEL_URL  ?? 'https://api.echolima.app/payment/cancel'
 
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',

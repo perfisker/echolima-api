@@ -45,6 +45,27 @@ app.get('/health', (_, res) => {
   res.json({ status: 'ok', service: 'echolima-api', timestamp: Date.now() })
 })
 
+// Stripe redirect sider
+app.get('/payment/success', (_, res) => {
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Betaling gennemført</title>
+  <style>body{font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a0a;color:#fff;}
+  h1{font-size:2rem;margin-bottom:8px;}p{color:#aaa;text-align:center;}</style></head>
+  <body><div style="font-size:3rem">✅</div><h1>Betaling gennemført</h1>
+  <p>Dit abonnement er aktiveret.<br>Du kan nu lukke denne fane og vende tilbage til EchoLima.</p></body></html>`)
+})
+
+app.get('/payment/cancel', (_, res) => {
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Betaling annulleret</title>
+  <style>body{font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a0a;color:#fff;}
+  h1{font-size:2rem;margin-bottom:8px;}p{color:#aaa;text-align:center;}</style></head>
+  <body><div style="font-size:3rem">❌</div><h1>Betaling annulleret</h1>
+  <p>Betalingen blev ikke gennemført.<br>Du kan lukke denne fane og prøve igen fra EchoLima.</p></body></html>`)
+})
+
 // Ruter
 app.use('/auth', authRoutes)
 app.use('/tiers', tiersRoutes)
