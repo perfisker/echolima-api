@@ -36,7 +36,8 @@ router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, re
 
     const stripe = getStripe()
     const priceId = getPriceId(tierId)
-    const uid = req.uid!
+    const uid = req.user?.uid
+    if (!uid) { res.status(401).json({ error: 'Ikke autoriseret' }); return }
     const successUrl = process.env.STRIPE_SUCCESS_URL ?? 'https://echolima.app/payment/success'
     const cancelUrl  = process.env.STRIPE_CANCEL_URL  ?? 'https://echolima.app/payment/cancel'
 
@@ -156,7 +157,8 @@ router.post('/webhook', async (req: Request, res: Response) => {
 // Returnerer URL til Stripe Customer Portal (bruger kan opsige/ændre abonnement)
 router.get('/portal', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const uid = req.uid!
+    const uid = req.user?.uid
+    if (!uid) { res.status(401).json({ error: 'Ikke autoriseret' }); return }
     const db = getFirestore()
     const userDoc = await db.collection('users').doc(uid).get()
     const stripeCustomerId = userDoc.data()?.stripeCustomerId
