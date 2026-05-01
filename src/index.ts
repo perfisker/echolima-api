@@ -10,13 +10,10 @@ import tiersRoutes from './routes/tiers'
 import usageRoutes from './routes/usage'
 import adminRoutes from './routes/admin'
 import appsRoutes from './routes/apps'
+import aiRoutes from './routes/ai'
+import emailRoutes from './routes/email'
 
 dotenv.config()
-
-// Debug: log available env var keys (not values)
-console.log('[DEBUG] Environment variable keys:', Object.keys(process.env).join(', '))
-console.log('[DEBUG] FIREBASE_SERVICE_ACCOUNT_JSON present:', !!process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
-console.log('[DEBUG] ADMIN_EMAIL present:', !!process.env.ADMIN_EMAIL)
 
 // Firebase Admin initialisering via service account JSON
 const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
@@ -49,6 +46,8 @@ app.use('/tiers', tiersRoutes)
 app.use('/usage', usageRoutes)
 app.use('/admin', adminRoutes)
 app.use('/apps', appsRoutes)
+app.use('/ai', aiRoutes)
+app.use('/email', emailRoutes)
 
 // 404
 app.use((_, res) => {
