@@ -43,7 +43,7 @@ router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, re
 
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
-      payment_method_types: ['card', 'mobilepay'],
+      payment_method_types: ['card'],
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: successUrl,
       cancel_url: cancelUrl,
