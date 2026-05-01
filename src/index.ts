@@ -12,6 +12,7 @@ import adminRoutes from './routes/admin'
 import appsRoutes from './routes/apps'
 import aiRoutes from './routes/ai'
 import emailRoutes from './routes/email'
+import stripeRoutes from './routes/stripe'
 
 dotenv.config()
 
@@ -32,6 +33,10 @@ const PORT = process.env.PORT ?? 3000
 // Middleware
 app.use(helmet())
 app.use(cors())
+
+// Stripe webhook kræver raw body — registreres FØR express.json()
+app.use('/stripe/webhook', express.raw({ type: 'application/json' }))
+
 app.use(express.json())
 app.use(generalLimiter)
 
@@ -48,6 +53,7 @@ app.use('/admin', adminRoutes)
 app.use('/apps', appsRoutes)
 app.use('/ai', aiRoutes)
 app.use('/email', emailRoutes)
+app.use('/stripe', stripeRoutes)
 
 // 404
 app.use((_, res) => {
