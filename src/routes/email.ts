@@ -30,23 +30,24 @@ router.post('/send', verifyToken, async (req: AuthRequest, res: Response) => {
 
     const resend = getResend()
 
-    const payload: Parameters<Resend['emails']['send']>[0] = {
+    // Resend kræver at html eller text altid er til stede (ikke bare optionelt)
+    const resolvedHtml: string = html ?? (text ? `<pre style="font-family:sans-serif">${text}</pre>` : '<p></p>')
+
+    const resolvedAttachments = (attachments && Array.isArray(attachments) && attachments.length > 0)
+      ? attachments.map((a: { filename: string; content: string }) => ({
+          filename: a.filename,
+          content: Buffer.from(a.content, 'base64')
+        }))
+      : undefined
+
+    const result = await resend.emails.send({
       from: 'EchoLima <noreply@echolima.app>',
       to: Array.isArray(to) ? to : [to],
       subject,
-      ...(html ? { html } : {}),
-      ...(text ? { text } : {})
-    }
-
-    // Vedhæftninger: base64-strenge sendes direkte videre til Resend
-    if (attachments && Array.isArray(attachments) && attachments.length > 0) {
-      payload.attachments = attachments.map((a: { filename: string; content: string }) => ({
-        filename: a.filename,
-        content: Buffer.from(a.content, 'base64')
-      }))
-    }
-
-    const result = await resend.emails.send(payload)
+      html: resolvedHtml,
+      ...(text ? { text } : {}),
+      ...(resolvedAttachments ? { attachments: resolvedAttachments } : {})
+    })
 
     if (result.error) {
       console.error('Resend fejl:', result.error)
