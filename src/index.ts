@@ -37,7 +37,7 @@ app.use(cors())
 // Stripe webhook kræver raw body — registreres FØR express.json()
 app.use('/stripe/webhook', express.raw({ type: 'application/json' }))
 
-app.use(express.json())
+app.use(express.json({ limit: '10mb' }))
 app.use(generalLimiter)
 
 // Health check
