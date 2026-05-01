@@ -13,9 +13,14 @@ import appsRoutes from './routes/apps'
 
 dotenv.config()
 
-// Firebase Admin initialisering
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT ?? '{}')
-initializeApp({ credential: cert(serviceAccount) })
+// Firebase Admin initialisering via individuelle environment variables
+initializeApp({
+  credential: cert({
+    projectId: process.env.FIREBASE_PROJECT_ID!,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY!.replace(/\\n/g, '\n')
+  })
+})
 
 const app = express()
 const PORT = process.env.PORT ?? 3000
