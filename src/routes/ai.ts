@@ -203,19 +203,26 @@ router.post('/parse-command', verifyToken, async (req: AuthRequest, res: Respons
 })
 
 // POST /ai/parse-alarm
-// Body: { spokenText }
+// Body: { spokenText, utcOffsetMinutes }
 // Returns: { epochMs: number | null }
 router.post('/parse-alarm', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { spokenText } = req.body
+    const { spokenText, utcOffsetMinutes } = req.body
     if (!spokenText) {
       res.status(400).json({ error: 'Mangler spokenText' })
       return
     }
-    const now = new Date().toLocaleString('da-DK', {
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit'
-    })
+
+    // Byg tidszone-suffix fra offset, fx +02:00 eller -05:00
+    const offsetMins = typeof utcOffsetMinutes === 'number' ? utcOffsetMinutes : 0
+    const sign = offsetMins >= 0 ? '+' : '-'
+    const absMin = Math.abs(offsetMins)
+    const tzSuffix = `${sign}${String(Math.floor(absMin / 60)).padStart(2, '0')}:${String(absMin % 60).padStart(2, '0')}`
+
+    // Vis nuværende tidspunkt i brugerens lokaltid i prompten
+    const localNow = new Date(Date.now() + offsetMins * 60_000)
+    const now = localNow.toISOString().slice(0, 16).replace('T', ' ') // "2025-06-02 14:30"
+
     const openai = getOpenAI()
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -230,7 +237,10 @@ router.post('/parse-alarm', verifyToken, async (req: AuthRequest, res: Response)
       res.json({ epochMs: null })
       return
     }
-    const date = new Date(content)
+
+    // Tilføj tidszone-suffix så new Date() tolker korrekt lokal tid
+    const dateWithTz = `${content}${tzSuffix}`
+    const date = new Date(dateWithTz)
     res.json({ epochMs: isNaN(date.getTime()) ? null : date.getTime() })
   } catch (err) {
     console.error('ai/parse-alarm fejl:', err)
