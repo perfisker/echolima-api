@@ -12,7 +12,7 @@ function getStripe(): Stripe {
   return new Stripe(key)
 }
 
-// Mapning fra tierId → Stripe Price ID (sættes som env vars i Render)
+// Mapning fra tierId → Stripe Price ID
 function getPriceId(tierId: string): string {
   const map: Record<string, string | undefined> = {
     charlie: process.env.STRIPE_PRICE_CHARLIE,
@@ -23,9 +23,15 @@ function getPriceId(tierId: string): string {
   return priceId
 }
 
+// Mapning fra Stripe Price ID → tierId (omvendt opslag)
+function getTierIdFromPriceId(priceId: string): string | null {
+  const map: Record<string, string> = {}
+  if (process.env.STRIPE_PRICE_CHARLIE) map[process.env.STRIPE_PRICE_CHARLIE] = 'charlie'
+  if (process.env.STRIPE_PRICE_PAPA)    map[process.env.STRIPE_PRICE_PAPA]    = 'papa'
+  return map[priceId] ?? null
+}
+
 // POST /stripe/create-checkout-session
-// Body: { tierId: 'charlie' | 'papa' }
-// Kræver auth — returnerer { url } til Stripe Checkout
 router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const { tierId } = req.body
@@ -38,12 +44,19 @@ router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, re
     const priceId = getPriceId(tierId)
     const uid = req.user?.uid
     if (!uid) { res.status(401).json({ error: 'Ikke autoriseret' }); return }
+
     const successUrl = process.env.STRIPE_SUCCESS_URL ?? 'https://api.echolima.app/payment/success'
     const cancelUrl  = process.env.STRIPE_CANCEL_URL  ?? 'https://api.echolima.app/payment/cancel'
+
+    // Hent evt. eksisterende Stripe kunde-ID så vi genbruger kunden
+    const db = getFirestore()
+    const userDoc = await db.collection('users').doc(uid).get()
+    const existingCustomerId = userDoc.data()?.stripeCustomerId
 
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       payment_method_types: ['card'],
+      customer: existingCustomerId ?? undefined,
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: successUrl,
       cancel_url: cancelUrl,
@@ -59,8 +72,6 @@ router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, re
 })
 
 // POST /stripe/webhook
-// Stripe sender events hertil — verificer signatur og opdater tier
-// VIGTIGT: raw body kræves til signaturverifikation (se index.ts)
 router.post('/webhook', async (req: Request, res: Response) => {
   const sig = req.headers['stripe-signature']
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET
@@ -85,22 +96,67 @@ router.post('/webhook', async (req: Request, res: Response) => {
   try {
     switch (event.type) {
 
-      // Ny abonnement oprettet / betaling gennemført
+      // Ny checkout gennemført → sæt tier med det samme
       case 'checkout.session.completed': {
         const session = event.data.object as Stripe.Checkout.Session
         const uid    = session.metadata?.uid
         const tierId = session.metadata?.tierId
         if (uid && tierId) {
           await db.collection('users').doc(uid).set(
-            { tierId, stripeCustomerId: session.customer, updatedAt: Date.now() },
+            {
+              tierId,
+              stripeCustomerId: session.customer,
+              pendingTierId: null,
+              pendingTierAt: null,
+              updatedAt: Date.now()
+            },
             { merge: true }
           )
-          console.log(`Tier opdateret: ${uid} → ${tierId}`)
+          console.log(`Tier opdateret via checkout: ${uid} → ${tierId}`)
         }
         break
       }
 
-      // Abonnement fornyet (månedlig betaling)
+      // Abonnement opdateret (skift af plan via Customer Portal)
+      case 'customer.subscription.updated': {
+        const subscription = event.data.object as Stripe.Subscription
+        const uid    = subscription.metadata?.uid
+        if (!uid) break
+
+        const priceId  = subscription.items.data[0]?.price?.id
+        const newTierId = priceId ? getTierIdFromPriceId(priceId) : null
+        const periodEnd = subscription.current_period_end * 1000 // ms
+
+        if (subscription.cancel_at_period_end) {
+          // Brugeren har opsagt — beholder adgang til periodens slutning
+          await db.collection('users').doc(uid).set(
+            {
+              pendingTierId: 'foxtrot',
+              pendingTierAt: periodEnd,
+              subscriptionPeriodEnd: periodEnd,
+              updatedAt: Date.now()
+            },
+            { merge: true }
+          )
+          console.log(`Opsigelse planlagt for: ${uid} ved ${new Date(periodEnd).toISOString()}`)
+        } else if (newTierId) {
+          // Plan skiftet (opgradering eller nedgradering med øjeblikkelig effekt)
+          await db.collection('users').doc(uid).set(
+            {
+              tierId: newTierId,
+              pendingTierId: null,
+              pendingTierAt: null,
+              subscriptionPeriodEnd: periodEnd,
+              updatedAt: Date.now()
+            },
+            { merge: true }
+          )
+          console.log(`Tier opdateret via portal: ${uid} → ${newTierId}`)
+        }
+        break
+      }
+
+      // Månedlig fornyelse
       case 'invoice.payment_succeeded': {
         const invoice = event.data.object as Stripe.Invoice
         const sub = invoice.subscription
@@ -108,18 +164,26 @@ router.post('/webhook', async (req: Request, res: Response) => {
           const stripe = getStripe()
           const subscription = await stripe.subscriptions.retrieve(sub)
           const uid    = subscription.metadata?.uid
-          const tierId = subscription.metadata?.tierId
+          const priceId = subscription.items.data[0]?.price?.id
+          const tierId  = priceId ? getTierIdFromPriceId(priceId) : subscription.metadata?.tierId
           if (uid && tierId) {
             await db.collection('users').doc(uid).set(
-              { tierId, updatedAt: Date.now() },
+              {
+                tierId,
+                pendingTierId: null,
+                pendingTierAt: null,
+                subscriptionPeriodEnd: subscription.current_period_end * 1000,
+                updatedAt: Date.now()
+              },
               { merge: true }
             )
+            console.log(`Tier fornyet: ${uid} → ${tierId}`)
           }
         }
         break
       }
 
-      // Abonnement annulleret / betaling fejlet
+      // Abonnement slettet eller betaling fejlet → tilbage til foxtrot
       case 'customer.subscription.deleted':
       case 'invoice.payment_failed': {
         const obj = event.data.object as Stripe.Subscription | Stripe.Invoice
@@ -133,7 +197,12 @@ router.post('/webhook', async (req: Request, res: Response) => {
           const uid = subscription.metadata?.uid
           if (uid) {
             await db.collection('users').doc(uid).set(
-              { tierId: 'foxtrot', updatedAt: Date.now() },
+              {
+                tierId: 'foxtrot',
+                pendingTierId: null,
+                pendingTierAt: null,
+                updatedAt: Date.now()
+              },
               { merge: true }
             )
             console.log(`Tier nulstillet til foxtrot: ${uid}`)
@@ -154,11 +223,12 @@ router.post('/webhook', async (req: Request, res: Response) => {
 })
 
 // GET /stripe/portal
-// Returnerer URL til Stripe Customer Portal (bruger kan opsige/ændre abonnement)
+// Åbner Stripe Customer Portal — brugeren kan skifte plan, opsige, se fakturaer
 router.get('/portal', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const uid = req.user?.uid
     if (!uid) { res.status(401).json({ error: 'Ikke autoriseret' }); return }
+
     const db = getFirestore()
     const userDoc = await db.collection('users').doc(uid).get()
     const stripeCustomerId = userDoc.data()?.stripeCustomerId
@@ -169,7 +239,7 @@ router.get('/portal', verifyToken, async (req: AuthRequest, res: Response) => {
     }
 
     const stripe = getStripe()
-    const returnUrl = process.env.STRIPE_SUCCESS_URL ?? 'https://echolima.app'
+    const returnUrl = process.env.STRIPE_SUCCESS_URL ?? 'https://api.echolima.app/payment/success'
     const portalSession = await stripe.billingPortal.sessions.create({
       customer: stripeCustomerId,
       return_url: returnUrl,
