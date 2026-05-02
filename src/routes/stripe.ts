@@ -271,4 +271,40 @@ router.get('/portal', verifyToken, async (req: AuthRequest, res: Response) => {
   }
 })
 
+// GET /stripe/invoices — hent betalingshistorik (kræver auth)
+router.get('/invoices', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const uid = req.user?.uid
+    if (!uid) { res.status(401).json({ error: 'Ikke autoriseret' }); return }
+
+    const db = getFirestore()
+    const userDoc = await db.collection('users').doc(uid).get()
+    const stripeCustomerId = userDoc.data()?.stripeCustomerId
+
+    if (!stripeCustomerId) {
+      res.json({ invoices: [] })
+      return
+    }
+
+    const stripe = getStripe()
+    const list = await stripe.invoices.list({ customer: stripeCustomerId, limit: 24 })
+
+    const invoices = list.data
+      .filter(inv => inv.status === 'paid' || inv.status === 'open')
+      .map(inv => ({
+        id: inv.id,
+        date: inv.created * 1000,
+        amount: inv.amount_paid / 100,
+        currency: inv.currency.toUpperCase(),
+        status: inv.status,
+        pdfUrl: inv.invoice_pdf
+      }))
+
+    res.json({ invoices })
+  } catch (err) {
+    console.error('stripe/invoices fejl:', err)
+    res.status(500).json({ error: 'Serverfejl' })
+  }
+})
+
 export default router

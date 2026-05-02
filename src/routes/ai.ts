@@ -248,4 +248,35 @@ router.post('/parse-alarm', verifyToken, async (req: AuthRequest, res: Response)
   }
 })
 
+// POST /ai/parse-contact
+// Body: { spokenText: string }
+// Returns: { name: string, email: string | null }
+router.post('/parse-contact', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { spokenText } = req.body
+    if (!spokenText || typeof spokenText !== 'string') {
+      res.status(400).json({ error: 'Mangler spokenText' })
+      return
+    }
+    const openai = getOpenAI()
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: 'Udtræk navn og email-adresse fra tekst. Returner KUN JSON på formen {"name":"...","email":"..."} — brug null for email hvis den ikke nævnes. Navn må ikke være null.'
+        },
+        { role: 'user', content: spokenText }
+      ],
+      response_format: { type: 'json_object' },
+      max_tokens: 100
+    })
+    const result = JSON.parse(completion.choices[0].message.content ?? '{}')
+    res.json({ name: result.name ?? '', email: result.email ?? null })
+  } catch (err) {
+    console.error('ai/parse-contact fejl:', err)
+    res.status(500).json({ error: 'Kontaktparsing fejlede' })
+  }
+})
+
 export default router

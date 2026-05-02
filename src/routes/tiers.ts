@@ -21,6 +21,37 @@ router.get('/', async (req: Request, res: Response) => {
   }
 })
 
+// GET /tiers/usage — hent forbrug og grænser for aktuel bruger (kræver auth)
+// Skal ligge FØR /:tierId så "usage" ikke matches som tierId
+router.get('/usage', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const uid = req.user!.uid
+    const db = getFirestore()
+
+    const userSnap = await db.collection('users').doc(uid).get()
+    const tierId = userSnap.data()?.tierId ?? 'foxtrot'
+
+    const [tierSnap, usageSnap] = await Promise.all([
+      db.collection('tiers').doc(tierId).get(),
+      db.collection('users').doc(uid).collection('usage').doc('echolima').get()
+    ])
+
+    const tier  = tierSnap.data()  ?? {}
+    const usage = usageSnap.data() ?? {}
+
+    res.json({
+      tierId,
+      transcriptions: { used: usage.transcriptions ?? 0, limit: tier.transcriptionsPerMonth ?? 0 },
+      aiSummaries:    { used: usage.aiSummaries    ?? 0, limit: tier.aiSummariesPerMonth    ?? 0 },
+      visionCalls:    { used: usage.visionCalls    ?? 0, limit: tier.visionCallsPerMonth    ?? 0 },
+      resetAt: usage.resetAt ?? null
+    })
+  } catch (err) {
+    console.error('tiers/usage fejl:', err)
+    res.status(500).json({ error: 'Serverfejl' })
+  }
+})
+
 // GET /tiers/:tierId — hent specifik tier (offentlig)
 router.get('/:tierId', async (req: Request, res: Response) => {
   try {
