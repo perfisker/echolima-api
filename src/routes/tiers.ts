@@ -58,21 +58,21 @@ router.post('/check', verifyToken, async (req: AuthRequest, res: Response) => {
     const tier = tierSnap.data() ?? {}
     const usage = usageSnap.data() ?? {}
 
-    const fieldMap: Record<string, string> = {
-      transcription: 'transcriptionsPerMonth',
-      visionCall: 'visionCallsPerMonth',
-      aiSummary: 'aiSummariesPerMonth'
+    const actionMap: Record<string, { tierField: string; usageField: string }> = {
+      transcription: { tierField: 'transcriptionsPerMonth', usageField: 'transcriptions' },
+      visionCall:   { tierField: 'visionCallsPerMonth',    usageField: 'visionCalls' },
+      aiSummary:    { tierField: 'aiSummariesPerMonth',    usageField: 'aiSummaries' }
     }
-    const field = fieldMap[action]
-    if (!field) {
+    const mapping = actionMap[action]
+    if (!mapping) {
       res.status(400).json({ error: 'Ukendt action' })
       return
     }
 
-    const limit = tier[field] ?? 0
-    const usageField = field.replace('PerMonth', '')
-    const used = usage[usageField] ?? 0
+    const limit = tier[mapping.tierField] ?? 0
+    const used  = usage[mapping.usageField] ?? 0
 
+    // -1 betyder ubegrænset
     const allowed = limit === -1 || used < limit
 
     res.json({ allowed, used, limit, tierId })

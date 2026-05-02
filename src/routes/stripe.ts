@@ -156,29 +156,48 @@ router.post('/webhook', async (req: Request, res: Response) => {
         break
       }
 
-      // Månedlig fornyelse
+      // Månedlig fornyelse — opdater tier og nulstil forbrug
       case 'invoice.payment_succeeded': {
         const invoice = event.data.object as Stripe.Invoice
         const sub = invoice.subscription
-        if (sub && typeof sub === 'string') {
-          const stripe = getStripe()
-          const subscription = await stripe.subscriptions.retrieve(sub)
-          const uid    = subscription.metadata?.uid
-          const priceId = subscription.items.data[0]?.price?.id
-          const tierId  = priceId ? getTierIdFromPriceId(priceId) : subscription.metadata?.tierId
-          if (uid && tierId) {
-            await db.collection('users').doc(uid).set(
+        // Ignorer fakturaer der ikke er tilknyttet et abonnement (f.eks. engangsbetalinger)
+        if (!sub || typeof sub !== 'string') break
+
+        const stripe = getStripe()
+        const subscription = await stripe.subscriptions.retrieve(sub)
+        const uid     = subscription.metadata?.uid
+        const priceId = subscription.items.data[0]?.price?.id
+        const tierId  = priceId ? getTierIdFromPriceId(priceId) : subscription.metadata?.tierId
+
+        if (uid && tierId) {
+          const periodEnd = subscription.current_period_end * 1000
+          const now = Date.now()
+
+          // Opdater brugerens tier og periode
+          await db.collection('users').doc(uid).set(
+            {
+              tierId,
+              pendingTierId: null,
+              pendingTierAt: null,
+              subscriptionPeriodEnd: periodEnd,
+              updatedAt: now
+            },
+            { merge: true }
+          )
+
+          // Nulstil forbrug for den nye periode
+          await db.collection('users').doc(uid)
+            .collection('usage').doc('echolima').set(
               {
-                tierId,
-                pendingTierId: null,
-                pendingTierAt: null,
-                subscriptionPeriodEnd: subscription.current_period_end * 1000,
-                updatedAt: Date.now()
+                transcriptions: 0,
+                visionCalls: 0,
+                aiSummaries: 0,
+                resetAt: now
               },
               { merge: true }
             )
-            console.log(`Tier fornyet: ${uid} → ${tierId}`)
-          }
+
+          console.log(`Tier fornyet og forbrug nulstillet: ${uid} → ${tierId}`)
         }
         break
       }
