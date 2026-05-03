@@ -16,33 +16,63 @@ function getOpenAI(): OpenAI {
   return new OpenAI({ apiKey: key })
 }
 
-// --- Prompts ---
+// ─────────────────────────────────────────────────────────────────────────────
+// Retry-logik til OpenAI rate limits
+//
+// Ved 429 (rate limit) venter vi eksponentielt og prøver igen.
+// Andre fejl kastes videre med det samme — ingen grund til at prøve igen.
+// Forsøg: 0 → vent 1s → forsøg 1 → vent 2s → forsøg 2 → vent 4s → kast fejl
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function callWithRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3
+): Promise<T> {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn()
+    } catch (err: any) {
+      const isRateLimit =
+        err?.status === 429 ||
+        err?.message?.toLowerCase().includes('rate limit') ||
+        err?.message?.toLowerCase().includes('too many requests')
+
+      // Kast fejlen videre hvis det ikke er rate limit, eller vi har brugt alle forsøg
+      if (!isRateLimit || attempt === maxRetries - 1) throw err
+
+      const delayMs = Math.pow(2, attempt) * 1000  // 1s, 2s, 4s
+      console.warn(`OpenAI rate limit — venter ${delayMs}ms (forsøg ${attempt + 1}/${maxRetries})`)
+      await new Promise(resolve => setTimeout(resolve, delayMs))
+    }
+  }
+  throw new Error('Max retries exceeded')
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Prompts
+// ─────────────────────────────────────────────────────────────────────────────
 
 function analyzePrompt(transcription: string): string {
   return `Du er en produktivitetsassistent. Analyser denne transskription og returner JSON med:
 1. En kort sigende titel (max 6 ord)
 2. Et kort resume (2-3 sætninger)
 3. En liste af konkrete opgaver/handlinger
-
 Returner KUN dette JSON format:
 {
     "title": "...",
     "summary": "...",
     "tasks": ["opgave 1", "opgave 2"]
 }
-
 Transskription: ${transcription}`
 }
 
 function visionPrompt(transcription: string): string {
   return `Du er en produktivitetsassistent. Du får et billede og en transskription fra en talenotat.
-
 Analyser begge og returner JSON med:
 1. En kort sigende titel (max 6 ord)
 2. Et kort resume der kombinerer hvad der ses på billedet og hvad der siges (2-3 sætninger)
 3. En liste af konkrete opgaver/handlinger baseret på begge inputs
 4. En præcis transskription af AL tekst der er synlig i billedet (bevar original formatering og rækkefølge)
-
 Returner KUN dette JSON format:
 {
     "title": "...",
@@ -50,19 +80,14 @@ Returner KUN dette JSON format:
     "tasks": ["opgave 1", "opgave 2"],
     "imageTranscription": "al tekst fra billedet her, eller null hvis ingen tekst"
 }
-
 Transskription: ${transcription}`
 }
 
-function parseVoiceCommandPrompt(
-  contactList: string,
-  taskList: string
-): string {
+function parseVoiceCommandPrompt(contactList: string, taskList: string): string {
   return `Du er en assistent der parser stemmekommandoer til at sende noter via email.
 Tilgængelige kontakter: ${contactList}
 Tilgængelige opgaver:
 ${taskList}
-
 Returner KUN JSON med disse felter:
 - contactNames: liste af kontaktnavne at sende til
 - includeResume: om resumé skal med (default true)
@@ -71,7 +96,6 @@ Returner KUN JSON med disse felter:
 - includeAllTasks: om alle opgaver skal med
 - includeImage: om billede skal vedhæftes
 - includeImageText: om tekst fra billede skal med
-
 Eksempel: "send resumé og opgave 1 og 3 til Michael"
 Svar: {"contactNames":["Michael"],"includeResume":true,"includeTranscription":false,"taskIndices":[1,3],"includeAllTasks":false,"includeImage":false,"includeImageText":false}`
 }
@@ -80,7 +104,9 @@ function parseAlarmPrompt(now: string): string {
   return `Du er en assistent der udtrækker dato og tid fra dansk tekst. Returner KUN en ISO datetime string på formatet "2025-05-02T14:00:00", eller ordet null hvis du ikke kan tolke datoen. I dag er: ${now}`
 }
 
-// --- Endpoints ---
+// ─────────────────────────────────────────────────────────────────────────────
+// Endpoints
+// ─────────────────────────────────────────────────────────────────────────────
 
 // POST /ai/transcribe
 // Multipart: field "file" (audio/m4a eller audio/*)
@@ -94,11 +120,13 @@ router.post('/transcribe', verifyToken, upload.single('file'), async (req: AuthR
     const audioFile = await toFile(req.file.buffer, req.file.originalname ?? 'audio.m4a', {
       type: req.file.mimetype ?? 'audio/m4a'
     })
-    const transcription = await openai.audio.transcriptions.create({
-      file: audioFile,
-      model: 'whisper-1',
-      language: 'da'
-    })
+    const transcription = await callWithRetry(() =>
+      openai.audio.transcriptions.create({
+        file: audioFile,
+        model: 'whisper-1',
+        language: 'da'
+      })
+    )
     res.json({ text: transcription.text })
   } catch (err) {
     console.error('ai/transcribe fejl:', err)
@@ -117,12 +145,14 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
       return
     }
     const openai = getOpenAI()
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: analyzePrompt(transcription) }],
-      max_tokens: 800,
-      response_format: { type: 'json_object' }
-    })
+    const completion = await callWithRetry(() =>
+      openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: analyzePrompt(transcription) }],
+        max_tokens: 800,
+        response_format: { type: 'json_object' }
+      })
+    )
     const content = completion.choices[0].message.content ?? '{}'
     res.json(JSON.parse(content))
   } catch (err) {
@@ -145,24 +175,26 @@ router.post('/vision', verifyToken, upload.single('image'), async (req: AuthRequ
     const base64 = req.file.buffer.toString('base64')
     const mimeType = req.file.mimetype ?? 'image/jpeg'
 
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o',
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: visionPrompt(transcription) },
-          {
-            type: 'image_url',
-            image_url: {
-              url: `data:${mimeType};base64,${base64}`,
-              detail: 'low'
+    const completion = await callWithRetry(() =>
+      openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: visionPrompt(transcription) },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:${mimeType};base64,${base64}`,
+                detail: 'low'
+              }
             }
-          }
-        ]
-      }],
-      max_tokens: 1500,
-      response_format: { type: 'json_object' }
-    })
+          ]
+        }],
+        max_tokens: 1500,
+        response_format: { type: 'json_object' }
+      })
+    )
     const content = completion.choices[0].message.content ?? '{}'
     res.json(JSON.parse(content))
   } catch (err) {
@@ -185,15 +217,17 @@ router.post('/parse-command', verifyToken, async (req: AuthRequest, res: Respons
     const taskList = (tasks as string[]).map((t, i) => `${i + 1}. ${t}`).join('\n')
     const contactList = (contactNames as string[]).join(', ')
 
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: parseVoiceCommandPrompt(contactList, taskList) },
-        { role: 'user', content: spokenText }
-      ],
-      max_tokens: 200,
-      response_format: { type: 'json_object' }
-    })
+    const completion = await callWithRetry(() =>
+      openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: parseVoiceCommandPrompt(contactList, taskList) },
+          { role: 'user', content: spokenText }
+        ],
+        max_tokens: 200,
+        response_format: { type: 'json_object' }
+      })
+    )
     const content = completion.choices[0].message.content ?? '{}'
     res.json(JSON.parse(content))
   } catch (err) {
@@ -212,33 +246,29 @@ router.post('/parse-alarm', verifyToken, async (req: AuthRequest, res: Response)
       res.status(400).json({ error: 'Mangler spokenText' })
       return
     }
-
-    // Byg tidszone-suffix fra offset, fx +02:00 eller -05:00
     const offsetMins = typeof utcOffsetMinutes === 'number' ? utcOffsetMinutes : 0
     const sign = offsetMins >= 0 ? '+' : '-'
     const absMin = Math.abs(offsetMins)
     const tzSuffix = `${sign}${String(Math.floor(absMin / 60)).padStart(2, '0')}:${String(absMin % 60).padStart(2, '0')}`
-
-    // Vis nuværende tidspunkt i brugerens lokaltid i prompten
     const localNow = new Date(Date.now() + offsetMins * 60_000)
-    const now = localNow.toISOString().slice(0, 16).replace('T', ' ') // "2025-06-02 14:30"
+    const now = localNow.toISOString().slice(0, 16).replace('T', ' ')
 
     const openai = getOpenAI()
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: parseAlarmPrompt(now) },
-        { role: 'user', content: `Tekst: "${spokenText}"` }
-      ],
-      max_tokens: 50
-    })
+    const completion = await callWithRetry(() =>
+      openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: parseAlarmPrompt(now) },
+          { role: 'user', content: `Tekst: "${spokenText}"` }
+        ],
+        max_tokens: 50
+      })
+    )
     const content = (completion.choices[0].message.content ?? '').trim()
     if (content === 'null' || !content) {
       res.json({ epochMs: null })
       return
     }
-
-    // Tilføj tidszone-suffix så new Date() tolker korrekt lokal tid
     const dateWithTz = `${content}${tzSuffix}`
     const date = new Date(dateWithTz)
     res.json({ epochMs: isNaN(date.getTime()) ? null : date.getTime() })
@@ -259,18 +289,20 @@ router.post('/parse-contact', verifyToken, async (req: AuthRequest, res: Respons
       return
     }
     const openai = getOpenAI()
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content: 'Udtræk navn og email-adresse fra tekst. Returner KUN JSON på formen {"name":"...","email":"..."} — brug null for email hvis den ikke nævnes. Navn må ikke være null.'
-        },
-        { role: 'user', content: spokenText }
-      ],
-      response_format: { type: 'json_object' },
-      max_tokens: 100
-    })
+    const completion = await callWithRetry(() =>
+      openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'Udtræk navn og email-adresse fra tekst. Returner KUN JSON på formen {"name":"...","email":"..."} — brug null for email hvis den ikke nævnes. Navn må ikke være null.'
+          },
+          { role: 'user', content: spokenText }
+        ],
+        response_format: { type: 'json_object' },
+        max_tokens: 100
+      })
+    )
     const result = JSON.parse(completion.choices[0].message.content ?? '{}')
     res.json({ name: result.name ?? '', email: result.email ?? null })
   } catch (err) {

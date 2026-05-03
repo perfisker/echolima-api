@@ -5,6 +5,45 @@ import { verifyToken } from '../middleware/auth'
 
 const router = Router()
 
+// ─────────────────────────────────────────────────────────────────────────────
+// In-memory tier cache
+// Tier-data ændres sjældent — cache i 5 minutter for at undgå
+// Firestore-læsning på hvert eneste AI-kald ved mange samtidige brugere.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface CacheEntry {
+  data: Record<string, any>
+  expiresAt: number
+}
+
+const tierCache = new Map<string, CacheEntry>()
+const CACHE_TTL_MS = 5 * 60 * 1000  // 5 minutter
+
+async function getCachedTier(tierId: string): Promise<Record<string, any>> {
+  const cached = tierCache.get(tierId)
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data
+  }
+
+  const snap = await getFirestore().collection('tiers').doc(tierId).get()
+  const data = snap.data() ?? {}
+  tierCache.set(tierId, { data, expiresAt: Date.now() + CACHE_TTL_MS })
+  return data
+}
+
+// Bruges af admin-routes til at tvinge cache-rydning når tier opdateres
+export function clearTierCache(tierId?: string) {
+  if (tierId) {
+    tierCache.delete(tierId)
+  } else {
+    tierCache.clear()
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Routes
+// ─────────────────────────────────────────────────────────────────────────────
+
 // GET /tiers — hent alle tiers (offentlig)
 router.get('/', async (req: Request, res: Response) => {
   try {
@@ -12,7 +51,6 @@ router.get('/', async (req: Request, res: Response) => {
       .collection('tiers')
       .orderBy('order')
       .get()
-
     const tiers = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))
     res.json({ tiers })
   } catch (err) {
@@ -31,12 +69,11 @@ router.get('/usage', verifyToken, async (req: AuthRequest, res: Response) => {
     const userSnap = await db.collection('users').doc(uid).get()
     const tierId = userSnap.data()?.tierId ?? 'foxtrot'
 
-    const [tierSnap, usageSnap] = await Promise.all([
-      db.collection('tiers').doc(tierId).get(),
+    // Brug cache til tier-data — undgå Firestore-læsning på hvert kald
+    const [tier, usageSnap] = await Promise.all([
+      getCachedTier(tierId),
       db.collection('users').doc(uid).collection('usage').doc('echolima').get()
     ])
-
-    const tier  = tierSnap.data()  ?? {}
     const usage = usageSnap.data() ?? {}
 
     res.json({
@@ -59,7 +96,6 @@ router.get('/:tierId', async (req: Request, res: Response) => {
       .collection('tiers')
       .doc(req.params.tierId)
       .get()
-
     if (!snap.exists) {
       res.status(404).json({ error: 'Tier ikke fundet' })
       return
@@ -76,24 +112,24 @@ router.post('/check', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const uid = req.user!.uid
     const { action } = req.body
-
     const db = getFirestore()
+
     const userSnap = await db.collection('users').doc(uid).get()
     const tierId = userSnap.data()?.tierId ?? 'foxtrot'
 
-    const [tierSnap, usageSnap] = await Promise.all([
-      db.collection('tiers').doc(tierId).get(),
+    // Brug cache til tier-data
+    const [tier, usageSnap] = await Promise.all([
+      getCachedTier(tierId),
       db.collection('users').doc(uid).collection('usage').doc('echolima').get()
     ])
-
-    const tier = tierSnap.data() ?? {}
     const usage = usageSnap.data() ?? {}
 
     const actionMap: Record<string, { tierField: string; usageField: string }> = {
       transcription: { tierField: 'transcriptionsPerMonth', usageField: 'transcriptions' },
-      visionCall:   { tierField: 'visionCallsPerMonth',    usageField: 'visionCalls' },
-      aiSummary:    { tierField: 'aiSummariesPerMonth',    usageField: 'aiSummaries' }
+      visionCall:    { tierField: 'visionCallsPerMonth',    usageField: 'visionCalls' },
+      aiSummary:     { tierField: 'aiSummariesPerMonth',    usageField: 'aiSummaries' }
     }
+
     const mapping = actionMap[action]
     if (!mapping) {
       res.status(400).json({ error: 'Ukendt action' })
@@ -105,7 +141,6 @@ router.post('/check', verifyToken, async (req: AuthRequest, res: Response) => {
 
     // -1 betyder ubegrænset
     const allowed = limit === -1 || used < limit
-
     res.json({ allowed, used, limit, tierId })
   } catch (err) {
     console.error('tiers/check fejl:', err)
