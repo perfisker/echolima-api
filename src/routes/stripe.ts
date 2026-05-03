@@ -31,6 +31,24 @@ function getTierIdFromPriceId(priceId: string): string | null {
   return map[priceId] ?? null
 }
 
+/**
+ * Hent current_period_end fra et Stripe Subscription-objekt.
+ *
+ * I nyere Stripe API-versioner er current_period_end rykket ned i
+ * items.data[0] — det er ikke længere garanteret på top-niveau.
+ * Denne hjælpefunktion returnerer altid et gyldigt tal eller null.
+ */
+function getPeriodEnd(subscription: Stripe.Subscription): number | null {
+  // Foretrækker items.data[0].current_period_end (nyere API)
+  const fromItem = subscription.items?.data?.[0]?.current_period_end
+  if (fromItem && fromItem > 0) return fromItem * 1000
+
+  // Fallback: cancel_at hvis abonnementet er ved at udløbe
+  if (subscription.cancel_at && subscription.cancel_at > 0) return subscription.cancel_at * 1000
+
+  return null
+}
+
 // POST /stripe/create-checkout-session
 router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
@@ -39,7 +57,6 @@ router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, re
       res.status(400).json({ error: 'Mangler tierId' })
       return
     }
-
     const stripe = getStripe()
     const priceId = getPriceId(tierId)
     const uid = req.user?.uid
@@ -63,7 +80,6 @@ router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, re
       metadata: { uid, tierId },
       subscription_data: { metadata: { uid, tierId } },
     })
-
     res.json({ url: session.url })
   } catch (err) {
     console.error('stripe/create-checkout-session fejl:', err)
@@ -75,7 +91,6 @@ router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, re
 router.post('/webhook', async (req: Request, res: Response) => {
   const sig = req.headers['stripe-signature']
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET
-
   if (!sig || !webhookSecret) {
     res.status(400).json({ error: 'Mangler webhook signatur eller secret' })
     return
@@ -92,7 +107,6 @@ router.post('/webhook', async (req: Request, res: Response) => {
   }
 
   const db = getFirestore()
-
   try {
     switch (event.type) {
 
@@ -120,12 +134,12 @@ router.post('/webhook', async (req: Request, res: Response) => {
       // Abonnement opdateret (skift af plan via Customer Portal)
       case 'customer.subscription.updated': {
         const subscription = event.data.object as Stripe.Subscription
-        const uid    = subscription.metadata?.uid
+        const uid = subscription.metadata?.uid
         if (!uid) break
 
-        const priceId  = subscription.items.data[0]?.price?.id
+        const priceId   = subscription.items.data[0]?.price?.id
         const newTierId = priceId ? getTierIdFromPriceId(priceId) : null
-        const periodEnd = subscription.current_period_end * 1000 // ms
+        const periodEnd = getPeriodEnd(subscription)  // ← bruger sikker hjælpefunktion
 
         if (subscription.cancel_at_period_end) {
           // Brugeren har opsagt — beholder adgang til periodens slutning
@@ -138,7 +152,7 @@ router.post('/webhook', async (req: Request, res: Response) => {
             },
             { merge: true }
           )
-          console.log(`Opsigelse planlagt for: ${uid} ved ${new Date(periodEnd).toISOString()}`)
+          console.log(`Opsigelse planlagt for: ${uid} ved ${periodEnd ? new Date(periodEnd).toISOString() : 'ukendt'}`)
         } else if (newTierId) {
           // Plan skiftet (opgradering eller nedgradering med øjeblikkelig effekt)
           await db.collection('users').doc(uid).set(
@@ -160,7 +174,6 @@ router.post('/webhook', async (req: Request, res: Response) => {
       case 'invoice.payment_succeeded': {
         const invoice = event.data.object as Stripe.Invoice
         const sub = invoice.subscription
-        // Ignorer fakturaer der ikke er tilknyttet et abonnement (f.eks. engangsbetalinger)
         if (!sub || typeof sub !== 'string') break
 
         const stripe = getStripe()
@@ -168,12 +181,10 @@ router.post('/webhook', async (req: Request, res: Response) => {
         const uid     = subscription.metadata?.uid
         const priceId = subscription.items.data[0]?.price?.id
         const tierId  = priceId ? getTierIdFromPriceId(priceId) : subscription.metadata?.tierId
+        const periodEnd = getPeriodEnd(subscription)  // ← bruger sikker hjælpefunktion
 
         if (uid && tierId) {
-          const periodEnd = subscription.current_period_end * 1000
           const now = Date.now()
-
-          // Opdater brugerens tier og periode
           await db.collection('users').doc(uid).set(
             {
               tierId,
@@ -184,8 +195,6 @@ router.post('/webhook', async (req: Request, res: Response) => {
             },
             { merge: true }
           )
-
-          // Nulstil forbrug for den nye periode
           await db.collection('users').doc(uid)
             .collection('usage').doc('echolima').set(
               {
@@ -196,7 +205,6 @@ router.post('/webhook', async (req: Request, res: Response) => {
               },
               { merge: true }
             )
-
           console.log(`Tier fornyet og forbrug nulstillet: ${uid} → ${tierId}`)
         }
         break
@@ -209,7 +217,6 @@ router.post('/webhook', async (req: Request, res: Response) => {
         const subId = 'subscription' in obj
           ? (obj as Stripe.Invoice).subscription
           : (obj as Stripe.Subscription).id
-
         if (subId && typeof subId === 'string') {
           const stripe = getStripe()
           const subscription = await stripe.subscriptions.retrieve(subId)
@@ -220,6 +227,7 @@ router.post('/webhook', async (req: Request, res: Response) => {
                 tierId: 'foxtrot',
                 pendingTierId: null,
                 pendingTierAt: null,
+                subscriptionPeriodEnd: null,
                 updatedAt: Date.now()
               },
               { merge: true }
@@ -233,7 +241,6 @@ router.post('/webhook', async (req: Request, res: Response) => {
       default:
         break
     }
-
     res.json({ received: true })
   } catch (err) {
     console.error('Stripe webhook behandlingsfejl:', err)
@@ -242,7 +249,6 @@ router.post('/webhook', async (req: Request, res: Response) => {
 })
 
 // GET /stripe/portal
-// Åbner Stripe Customer Portal — brugeren kan skifte plan, opsige, se fakturaer
 router.get('/portal', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const uid = req.user?.uid
@@ -251,19 +257,16 @@ router.get('/portal', verifyToken, async (req: AuthRequest, res: Response) => {
     const db = getFirestore()
     const userDoc = await db.collection('users').doc(uid).get()
     const stripeCustomerId = userDoc.data()?.stripeCustomerId
-
     if (!stripeCustomerId) {
       res.status(404).json({ error: 'Ingen Stripe-kunde fundet' })
       return
     }
-
     const stripe = getStripe()
     const returnUrl = process.env.STRIPE_SUCCESS_URL ?? 'https://api.echolima.app/payment/success'
     const portalSession = await stripe.billingPortal.sessions.create({
       customer: stripeCustomerId,
       return_url: returnUrl,
     })
-
     res.json({ url: portalSession.url })
   } catch (err) {
     console.error('stripe/portal fejl:', err)
@@ -271,7 +274,7 @@ router.get('/portal', verifyToken, async (req: AuthRequest, res: Response) => {
   }
 })
 
-// GET /stripe/invoices — hent betalingshistorik (kræver auth)
+// GET /stripe/invoices
 router.get('/invoices', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const uid = req.user?.uid
@@ -280,15 +283,12 @@ router.get('/invoices', verifyToken, async (req: AuthRequest, res: Response) => 
     const db = getFirestore()
     const userDoc = await db.collection('users').doc(uid).get()
     const stripeCustomerId = userDoc.data()?.stripeCustomerId
-
     if (!stripeCustomerId) {
       res.json({ invoices: [] })
       return
     }
-
     const stripe = getStripe()
     const list = await stripe.invoices.list({ customer: stripeCustomerId, limit: 24 })
-
     const invoices = list.data
       .filter(inv => inv.status === 'paid' || inv.status === 'open')
       .map(inv => ({
@@ -299,7 +299,6 @@ router.get('/invoices', verifyToken, async (req: AuthRequest, res: Response) => 
         status: inv.status,
         pdfUrl: inv.invoice_pdf
       }))
-
     res.json({ invoices })
   } catch (err) {
     console.error('stripe/invoices fejl:', err)
