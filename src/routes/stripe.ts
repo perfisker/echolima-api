@@ -34,14 +34,13 @@ function getTierIdFromPriceId(priceId: string): string | null {
 /**
  * Hent current_period_end fra et Stripe Subscription-objekt.
  *
- * I nyere Stripe API-versioner er current_period_end rykket ned i
- * items.data[0] — det er ikke længere garanteret på top-niveau.
+ * current_period_end er typet som number på Subscription top-niveau,
+ * men kan ved runtime returnere 0 eller NaN ved API-version mismatch.
  * Denne hjælpefunktion returnerer altid et gyldigt tal eller null.
  */
 function getPeriodEnd(subscription: Stripe.Subscription): number | null {
-  // Foretrækker items.data[0].current_period_end (nyere API)
-  const fromItem = subscription.items?.data?.[0]?.current_period_end
-  if (fromItem && fromItem > 0) return fromItem * 1000
+  const periodEnd = subscription.current_period_end
+  if (periodEnd && !isNaN(periodEnd) && periodEnd > 0) return periodEnd * 1000
 
   // Fallback: cancel_at hvis abonnementet er ved at udløbe
   if (subscription.cancel_at && subscription.cancel_at > 0) return subscription.cancel_at * 1000
