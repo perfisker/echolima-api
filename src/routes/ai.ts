@@ -90,14 +90,16 @@ Tilgængelige opgaver:
 ${taskList}
 Returner KUN JSON med disse felter:
 - contactNames: liste af kontaktnavne at sende til
-- includeResume: om resumé skal med (default true)
-- includeTranscription: om transskription skal med
+- includeResume: om resumé/opsummering skal med (default true)
+- includeTranscription: om lydtekst/transskription/optagelse skal med (brugeren siger "lydtekst")
 - taskIndices: liste af opgavenumre (1-baseret) der skal med
-- includeAllTasks: om alle opgaver skal med
+- includeAllTasks: om alle opgaver skal med (brugeren siger "opgaver" eller "alle opgaver")
 - includeImage: om billede skal vedhæftes
-- includeImageText: om tekst fra billede skal med
-Eksempel: "send resumé og opgave 1 og 3 til Michael"
-Svar: {"contactNames":["Michael"],"includeResume":true,"includeTranscription":false,"taskIndices":[1,3],"includeAllTasks":false,"includeImage":false,"includeImageText":false}`
+- includeImageText: om billedtekst/tekst fra billede skal med (brugeren siger "billedtekst")
+Eksempel 1: "send resumé og opgave 1 og 3 til Michael"
+Svar: {"contactNames":["Michael"],"includeResume":true,"includeTranscription":false,"taskIndices":[1,3],"includeAllTasks":false,"includeImage":false,"includeImageText":false}
+Eksempel 2: "send lydtekst og billedtekst og alle opgaver til Sarah"
+Svar: {"contactNames":["Sarah"],"includeResume":false,"includeTranscription":true,"taskIndices":[],"includeAllTasks":true,"includeImage":false,"includeImageText":true}`
 }
 
 function parseAlarmPrompt(now: string): string {
