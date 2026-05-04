@@ -103,7 +103,24 @@ Svar: {"contactNames":["Sarah"],"includeResume":false,"includeTranscription":tru
 }
 
 function parseAlarmPrompt(now: string): string {
-  return `Du er en assistent der udtrækker dato og tid fra dansk tekst. Returner KUN en ISO datetime string på formatet "2025-05-02T14:00:00", eller ordet null hvis du ikke kan tolke datoen. I dag er: ${now}`
+  return `Du er en assistent der udtrækker dato og tid fra dansk tekst.
+Returner KUN en ISO datetime string på formatet "YYYY-MM-DDTHH:mm:ss", eller ordet null hvis du ikke kan tolke datoen.
+
+Regler for manglende information:
+- Hvis intet år nævnes: brug indeværende år fra "Nu er"-linjen nedenfor.
+- Hvis ingen måned nævnes: brug indeværende måned fra "Nu er"-linjen nedenfor.
+- Hvis intet klokkeslet nævnes: sæt klokkeslet til 13:00:00.
+- Relativt datouttryk som "i morgen", "om to dage", "næste mandag" beregnes ud fra dags dato.
+
+Eksempler (antag at i dag er 2026-05-04T10:30:00):
+- "husk mig på fredag"           → "2026-05-08T13:00:00"
+- "alarm i morgen kl 9"          → "2026-05-05T09:00:00"
+- "påmind mig den 15. kl 14.30"  → "2026-05-15T14:30:00"
+- "sæt alarm til den 3. juni"    → "2026-06-03T13:00:00"
+- "husk mig om en uge"           → "2026-05-11T13:00:00"
+- "alarm næste mandag kl 8"      → "2026-05-11T08:00:00"
+
+Nu er: ${now}`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
