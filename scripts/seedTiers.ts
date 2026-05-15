@@ -10,10 +10,13 @@ initializeApp({ credential: cert(serviceAccount) })
 
 const db = getFirestore()
 
-// Kun funktionel data — præsentationstekst (navne, beskrivelser, features) håndteres i appen via strings.xml
+// Tier-IDs er opaque (Arch #2 migration). Visning af navne/beskrivelser sker
+// nu via displayName + description fra dette doc — ikke længere via strings.xml.
 const tiers = [
   {
-    id: 'foxtrot',
+    id: 'tier_free',
+    displayName: { da: 'Gratis', en: 'Free' },
+    description: { da: 'For dig der vil prøve VoiceNotes', en: 'For trying out' },
     price: 0,
     currency: 'DKK',
     transcriptionsPerMonth: 10,
@@ -24,7 +27,9 @@ const tiers = [
     order: 1,
   },
   {
-    id: 'charlie',
+    id: 'tier_basic',
+    displayName: { da: 'Let bruger', en: 'Basic' },
+    description: { da: 'Til den let-engagerede bruger', en: 'For light users' },
     price: 49,
     currency: 'DKK',
     transcriptionsPerMonth: 100,
@@ -35,7 +40,9 @@ const tiers = [
     order: 2,
   },
   {
-    id: 'papa',
+    id: 'tier_pro',
+    displayName: { da: 'Professionel', en: 'Pro' },
+    description: { da: 'Fuld kraft inkl. fil-backup', en: 'Full power with file backup' },
     price: 99,
     currency: 'DKK',
     transcriptionsPerMonth: 500,
@@ -46,7 +53,9 @@ const tiers = [
     order: 3,
   },
   {
-    id: 'echo',
+    id: 'tier_unlimited',
+    displayName: { da: 'Ubegrænset', en: 'Unlimited' },
+    description: { da: 'Custom enterprise-aftale', en: 'Custom enterprise plan' },
     price: -1,
     currency: 'DKK',
     transcriptionsPerMonth: -1,

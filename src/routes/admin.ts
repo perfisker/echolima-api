@@ -91,16 +91,20 @@ router.get('/revenue', verifyToken, isAdmin, async (req: AuthRequest, res: Respo
     const db = getFirestore()
     const usersSnap = await db.collection('users').get()
 
+    // Hardcoded priser pr. tier — bør på sigt læses fra tiers-collection
+    // i stedet for at duplikeres her. tier_unlimited har price: -1 i
+    // seedTiers (custom enterprise-aftale), men tæller 0 i revenue indtil
+    // vi har en faktisk kontraktværdi at lægge på.
     const tierPrices: Record<string, number> = {
-      free: 0,
-      casual: 49,
-      pro: 149,
-      enterprise: 499
+      tier_free:      0,
+      tier_basic:    49,
+      tier_pro:      99,
+      tier_unlimited: 0
     }
 
     const summary: Record<string, { count: number; revenue: number }> = {}
     usersSnap.docs.forEach(doc => {
-      const tierId = doc.data().tierId ?? 'free'
+      const tierId = doc.data().tierId ?? 'tier_free'
       if (!summary[tierId]) summary[tierId] = { count: 0, revenue: 0 }
       summary[tierId].count++
       summary[tierId].revenue += tierPrices[tierId] ?? 0

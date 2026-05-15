@@ -20,7 +20,7 @@ router.post('/sync', authLimiter, verifyToken, async (req: AuthRequest, res: Res
         email: user.email ?? '',
         displayName: user.name ?? '',
         photoURL: user.picture ?? '',
-        tierId: 'free',
+        tierId: 'tier_free',
         createdAt: Date.now(),
         lastSeen: Date.now(),
         locale: 'da'
@@ -32,10 +32,10 @@ router.post('/sync', authLimiter, verifyToken, async (req: AuthRequest, res: Res
         storageBytes: 0,
         resetAt: Date.now()
       })
-      res.json({ created: true, tierId: 'free' })
+      res.json({ created: true, tierId: 'tier_free' })
     } else {
       await userRef.update({ lastSeen: Date.now() })
-      res.json({ created: false, tierId: snap.data()?.tierId ?? 'free' })
+      res.json({ created: false, tierId: snap.data()?.tierId ?? 'tier_free' })
     }
   } catch (err) {
     console.error('auth/sync fejl:', err)
@@ -56,8 +56,12 @@ router.get('/me', verifyToken, async (req: AuthRequest, res: Response) => {
       res.status(404).json({ error: 'Bruger ikke fundet' })
       return
     }
-    const tierId = userSnap.data()?.tierId ?? 'free'
-    const tierSnap = await db.collection('tiers').doc(`echolima_${tierId}`).get()
+    const tierId = userSnap.data()?.tierId ?? 'tier_free'
+    // NB: tiers-collection bruger doc-IDs uden prefix (matcher seedTiers.ts og
+    // resten af codebase'en, fx routes/tiers.ts). Tidligere stod der her
+    // `echolima_${tierId}` hvilket altid resulterede i tierSnap.exists=false,
+    // så GET /auth/me returnerede tier: null for alle brugere.
+    const tierSnap = await db.collection('tiers').doc(tierId).get()
     res.json({ user: userSnap.data(), tier: tierSnap.data() ?? null, usage: usageSnap.data() ?? null })
   } catch (err) {
     console.error('auth/me fejl:', err)

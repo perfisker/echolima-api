@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import Stripe from 'stripe'
 import { getFirestore } from 'firebase-admin/firestore'
+import { getAuth } from 'firebase-admin/auth'
 import { verifyToken } from '../middleware/auth'
 import { AuthRequest } from '../types'
 
@@ -13,10 +14,12 @@ function getStripe(): Stripe {
 }
 
 // Mapning fra tierId → Stripe Price ID
+// NB: env-vars omdøbt fra STRIPE_PRICE_CHARLIE/PAPA til STRIPE_PRICE_BASIC/PRO
+// som del af Arch #2 (opaque tier-IDs). Husk at omdøbe på Render dashboard.
 function getPriceId(tierId: string): string {
   const map: Record<string, string | undefined> = {
-    charlie: process.env.STRIPE_PRICE_CHARLIE,
-    papa:    process.env.STRIPE_PRICE_PAPA,
+    tier_basic: process.env.STRIPE_PRICE_BASIC,
+    tier_pro:   process.env.STRIPE_PRICE_PRO,
   }
   const priceId = map[tierId]
   if (!priceId) throw new Error(`Ingen Stripe price ID for tier: ${tierId}`)
@@ -26,8 +29,8 @@ function getPriceId(tierId: string): string {
 // Mapning fra Stripe Price ID → tierId (omvendt opslag)
 function getTierIdFromPriceId(priceId: string): string | null {
   const map: Record<string, string> = {}
-  if (process.env.STRIPE_PRICE_CHARLIE) map[process.env.STRIPE_PRICE_CHARLIE] = 'charlie'
-  if (process.env.STRIPE_PRICE_PAPA)    map[process.env.STRIPE_PRICE_PAPA]    = 'papa'
+  if (process.env.STRIPE_PRICE_BASIC) map[process.env.STRIPE_PRICE_BASIC] = 'tier_basic'
+  if (process.env.STRIPE_PRICE_PRO)   map[process.env.STRIPE_PRICE_PRO]   = 'tier_pro'
   return map[priceId] ?? null
 }
 
@@ -46,6 +49,115 @@ function getPeriodEnd(subscription: Stripe.Subscription): number | null {
   if (subscription.cancel_at && subscription.cancel_at > 0) return subscription.cancel_at * 1000
 
   return null
+}
+
+/**
+ * Sørger for at user-doc'et for `uid` har de basale profil-felter
+ * (uid, email, displayName, photoURL, createdAt, lastSeen, locale, tierId)
+ * FØR webhook-handleren begynder at skrive Stripe-felter.
+ *
+ * Hvis doc'et allerede findes, røres det ikke — eksisterende felter overskrives ikke.
+ * Hvis det ikke findes, hentes profil-data via Firebase Auth og doc'et oprettes
+ * med samme shape som auth.ts /sync, plus en tom usage/echolima subcollection.
+ *
+ * Defensiv tierId='tier_free' så reads mellem init og det efterfølgende Stripe-set
+ * altid har en gyldig tier. Stripe-handleren overskriver dette straks efter via merge.
+ *
+ * Fix for Bug A: tidligere skrev webhook'en kun {tierId, stripeCustomerId, updatedAt}
+ * via merge på et tomt doc, hvilket efterlod uid/email/displayName/photoURL/createdAt
+ * /locale tomme. AuthViewModel'ens efterfølgende /sync så at doc eksisterede og
+ * opdaterede kun lastSeen — uden at backfill'e.
+ */
+async function ensureUserDocInitialized(uid: string): Promise<void> {
+  const db = getFirestore()
+  const userRef = db.collection('users').doc(uid)
+  const snap = await userRef.get()
+  if (snap.exists) return
+
+  let email = ''
+  let displayName = ''
+  let photoURL = ''
+  try {
+    const userRecord = await getAuth().getUser(uid)
+    email       = userRecord.email ?? ''
+    displayName = userRecord.displayName ?? ''
+    photoURL    = userRecord.photoURL ?? ''
+  } catch (err) {
+    // Firebase Auth-bruger findes ikke endnu — sker hvis Stripe-checkout fyrer
+    // FØR brugeren har gennemført Google Sign-In. Vi initialiserer alligevel
+    // doc'et med tomme strenge; auth.ts /sync kan backfill'e senere.
+    console.warn(`ensureUserDocInitialized: kunne ikke hente Auth-profil for ${uid}:`, err)
+  }
+
+  const now = Date.now()
+  await userRef.set({
+    uid,
+    email,
+    displayName,
+    photoURL,
+    tierId: 'tier_free',
+    createdAt: now,
+    lastSeen: now,
+    locale: 'da'
+  })
+  await userRef.collection('usage').doc('echolima').set({
+    transcriptions: 0,
+    visionCalls: 0,
+    aiSummaries: 0,
+    storageBytes: 0,
+    resetAt: now
+  })
+  console.log(`User-doc initialiseret via Stripe-webhook: ${uid}`)
+}
+
+/**
+ * Tier-prioritet baseret på `order`-feltet i seedTiers.ts.
+ * Bruges til at finde den højeste aktive tier blandt en customer's
+ * resterende Stripe-subscriptions før vi degraderer ved
+ * customer.subscription.deleted eller invoice.payment_failed.
+ */
+const TIER_PRIORITY: Record<string, number> = {
+  tier_free: 1,
+  tier_basic: 2,
+  tier_pro: 3,
+  tier_unlimited: 4
+}
+
+/**
+ * Returnerer den højeste aktive subscription på `customerId` (tier + sub-objekt),
+ * eller null hvis ingen andre aktive subs findes.
+ *
+ * `excludeSubId` filtrerer den subscription der lige er blevet slettet eller
+ * har fået payment_failed fra resultatet — defensivt, selvom status:'active'-
+ * filteret normalt allerede ekskluderer canceled/past_due/incomplete.
+ *
+ * Fix for Bug B: tidligere blev tier nulstillet til 'foxtrot' uden at tjekke
+ * om customer havde andre aktive subs. Bruger med Charlie+Papa der cancelede
+ * Papa blev fejlagtigt degraderet til foxtrot selvom Charlie var aktiv.
+ */
+async function getHighestActiveTier(
+  stripe: Stripe,
+  customerId: string,
+  excludeSubId?: string
+): Promise<{ tierId: string; subscription: Stripe.Subscription } | null> {
+  const subs = await stripe.subscriptions.list({
+    customer: customerId,
+    status: 'active',
+    limit: 5
+  })
+  let best: { tierId: string; subscription: Stripe.Subscription; priority: number } | null = null
+  for (const sub of subs.data) {
+    if (excludeSubId && sub.id === excludeSubId) continue
+    const priceId = sub.items.data[0]?.price?.id
+    const tierId = priceId ? getTierIdFromPriceId(priceId) : null
+    if (!tierId) continue
+    const priority = TIER_PRIORITY[tierId] ?? 0
+    if (!best || priority > best.priority) {
+      best = { tierId, subscription: sub, priority }
+    }
+  }
+  if (!best) return null
+  return { tierId: best.tierId, subscription: best.subscription }
 }
 
 // POST /stripe/create-checkout-session
@@ -115,6 +227,8 @@ router.post('/webhook', async (req: Request, res: Response) => {
         const uid    = session.metadata?.uid
         const tierId = session.metadata?.tierId
         if (uid && tierId) {
+          // Bug A fix: initialisér user-doc fuldt FØR vi merger Stripe-felter ind
+          await ensureUserDocInitialized(uid)
           await db.collection('users').doc(uid).set(
             {
               tierId,
@@ -136,6 +250,10 @@ router.post('/webhook', async (req: Request, res: Response) => {
         const uid = subscription.metadata?.uid
         if (!uid) break
 
+        // Bug A fix: defensiv init (doc'et findes typisk allerede her, men sikrer
+        // mod edge cases hvor portal-event når frem før checkout-event)
+        await ensureUserDocInitialized(uid)
+
         const priceId   = subscription.items.data[0]?.price?.id
         const newTierId = priceId ? getTierIdFromPriceId(priceId) : null
         const periodEnd = getPeriodEnd(subscription)  // ← bruger sikker hjælpefunktion
@@ -144,7 +262,7 @@ router.post('/webhook', async (req: Request, res: Response) => {
           // Brugeren har opsagt — beholder adgang til periodens slutning
           await db.collection('users').doc(uid).set(
             {
-              pendingTierId: 'foxtrot',
+              pendingTierId: 'tier_free',
               pendingTierAt: periodEnd,
               subscriptionPeriodEnd: periodEnd,
               updatedAt: Date.now()
@@ -183,6 +301,10 @@ router.post('/webhook', async (req: Request, res: Response) => {
         const periodEnd = getPeriodEnd(subscription)  // ← bruger sikker hjælpefunktion
 
         if (uid && tierId) {
+          // Bug A fix: hvis det allerførste touch er en fornyelse (sjældent men
+          // muligt hvis checkout-eventet droppede), initialisér doc fuldt først.
+          await ensureUserDocInitialized(uid)
+
           const now = Date.now()
           await db.collection('users').doc(uid).set(
             {
@@ -209,30 +331,57 @@ router.post('/webhook', async (req: Request, res: Response) => {
         break
       }
 
-      // Abonnement slettet eller betaling fejlet → tilbage til foxtrot
+      // Abonnement slettet eller betaling fejlet → degradér, men kun hvis
+      // customer ikke har andre aktive subscriptions (Bug B fix)
       case 'customer.subscription.deleted':
       case 'invoice.payment_failed': {
         const obj = event.data.object as Stripe.Subscription | Stripe.Invoice
         const subId = 'subscription' in obj
           ? (obj as Stripe.Invoice).subscription
           : (obj as Stripe.Subscription).id
-        if (subId && typeof subId === 'string') {
-          const stripe = getStripe()
-          const subscription = await stripe.subscriptions.retrieve(subId)
-          const uid = subscription.metadata?.uid
-          if (uid) {
-            await db.collection('users').doc(uid).set(
-              {
-                tierId: 'foxtrot',
-                pendingTierId: null,
-                pendingTierAt: null,
-                subscriptionPeriodEnd: null,
-                updatedAt: Date.now()
-              },
-              { merge: true }
-            )
-            console.log(`Tier nulstillet til foxtrot: ${uid}`)
+        if (!subId || typeof subId !== 'string') break
+
+        const stripe = getStripe()
+        const subscription = await stripe.subscriptions.retrieve(subId)
+        const uid = subscription.metadata?.uid
+        if (!uid) break
+
+        // Bug A fix: defensiv init før evt. degradering
+        await ensureUserDocInitialized(uid)
+
+        // Bug B fix: tjek om customer har andre aktive subs FØR vi degraderer.
+        // subscription.customer kan være string, expanded Customer, eller
+        // DeletedCustomer — vi henter ID'et defensivt.
+        const customerId = typeof subscription.customer === 'string'
+          ? subscription.customer
+          : subscription.customer?.id
+
+        let resolvedTierId: string = 'tier_free'
+        let resolvedPeriodEnd: number | null = null
+
+        if (customerId) {
+          const active = await getHighestActiveTier(stripe, customerId, subId)
+          if (active) {
+            resolvedTierId = active.tierId
+            resolvedPeriodEnd = getPeriodEnd(active.subscription)
           }
+        }
+
+        await db.collection('users').doc(uid).set(
+          {
+            tierId: resolvedTierId,
+            pendingTierId: null,
+            pendingTierAt: null,
+            subscriptionPeriodEnd: resolvedPeriodEnd,
+            updatedAt: Date.now()
+          },
+          { merge: true }
+        )
+
+        if (resolvedTierId === 'tier_free') {
+          console.log(`Tier degraderet til tier_free: ${uid}`)
+        } else {
+          console.log(`Tier bibeholdt via anden aktiv sub: ${uid} → ${resolvedTierId}`)
         }
         break
       }

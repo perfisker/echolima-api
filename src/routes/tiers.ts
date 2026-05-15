@@ -45,6 +45,7 @@ export function clearTierCache(tierId?: string) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // GET /tiers — hent alle tiers (offentlig)
+// Returnerer displayName + description automatisk via {...doc.data()}-spread.
 router.get('/', async (req: Request, res: Response) => {
   try {
     const snap = await getFirestore()
@@ -67,7 +68,7 @@ router.get('/usage', verifyToken, async (req: AuthRequest, res: Response) => {
     const db = getFirestore()
 
     const userSnap = await db.collection('users').doc(uid).get()
-    const tierId = userSnap.data()?.tierId ?? 'foxtrot'
+    const tierId = userSnap.data()?.tierId ?? 'tier_free'
 
     // Brug cache til tier-data — undgå Firestore-læsning på hvert kald
     const [tier, usageSnap] = await Promise.all([
@@ -115,7 +116,7 @@ router.post('/check', verifyToken, async (req: AuthRequest, res: Response) => {
     const db = getFirestore()
 
     const userSnap = await db.collection('users').doc(uid).get()
-    const tierId = userSnap.data()?.tierId ?? 'foxtrot'
+    const tierId = userSnap.data()?.tierId ?? 'tier_free'
 
     // Brug cache til tier-data
     const [tier, usageSnap] = await Promise.all([
