@@ -165,13 +165,13 @@ router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, re
   try {
     const { tierId } = req.body
     if (!tierId || typeof tierId !== 'string') {
-      res.status(400).json({ error: 'Mangler tierId' })
+      res.status(400).json({ error: 'missing_tier_id', message: 'Mangler tierId' })
       return
     }
     const stripe = getStripe()
     const priceId = getPriceId(tierId)
     const uid = req.user?.uid
-    if (!uid) { res.status(401).json({ error: 'Ikke autoriseret' }); return }
+    if (!uid) { res.status(401).json({ error: 'unauthenticated', message: 'Ikke autoriseret' }); return }
 
     const successUrl = process.env.STRIPE_SUCCESS_URL ?? 'https://api.echolima.app/payment/success'
     const cancelUrl  = process.env.STRIPE_CANCEL_URL  ?? 'https://api.echolima.app/payment/cancel'
@@ -194,7 +194,7 @@ router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, re
     res.json({ url: session.url })
   } catch (err) {
     console.error('stripe/create-checkout-session fejl:', err)
-    res.status(500).json({ error: 'Kunne ikke oprette betalingssession' })
+    res.status(500).json({ error: 'checkout_session_failed', message: 'Kunne ikke oprette betalingssession' })
   }
 })
 
@@ -400,13 +400,16 @@ router.post('/webhook', async (req: Request, res: Response) => {
 router.get('/portal', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const uid = req.user?.uid
-    if (!uid) { res.status(401).json({ error: 'Ikke autoriseret' }); return }
+    if (!uid) { res.status(401).json({ error: 'unauthenticated', message: 'Ikke autoriseret' }); return }
 
     const db = getFirestore()
     const userDoc = await db.collection('users').doc(uid).get()
     const stripeCustomerId = userDoc.data()?.stripeCustomerId
     if (!stripeCustomerId) {
-      res.status(404).json({ error: 'Ingen Stripe-kunde fundet' })
+      res.status(404).json({
+        error: 'no_stripe_customer',
+        message: 'Brugeren har ingen Stripe-kunde — start checkout-flow i stedet'
+      })
       return
     }
     const stripe = getStripe()
@@ -418,7 +421,7 @@ router.get('/portal', verifyToken, async (req: AuthRequest, res: Response) => {
     res.json({ url: portalSession.url })
   } catch (err) {
     console.error('stripe/portal fejl:', err)
-    res.status(500).json({ error: 'Kunne ikke oprette portal-session' })
+    res.status(500).json({ error: 'portal_session_failed', message: 'Kunne ikke oprette portal-session' })
   }
 })
 
@@ -426,7 +429,7 @@ router.get('/portal', verifyToken, async (req: AuthRequest, res: Response) => {
 router.get('/invoices', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const uid = req.user?.uid
-    if (!uid) { res.status(401).json({ error: 'Ikke autoriseret' }); return }
+    if (!uid) { res.status(401).json({ error: 'unauthenticated', message: 'Ikke autoriseret' }); return }
 
     const db = getFirestore()
     const userDoc = await db.collection('users').doc(uid).get()
@@ -450,7 +453,7 @@ router.get('/invoices', verifyToken, async (req: AuthRequest, res: Response) => 
     res.json({ invoices })
   } catch (err) {
     console.error('stripe/invoices fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 

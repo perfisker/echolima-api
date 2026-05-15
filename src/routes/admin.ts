@@ -28,7 +28,7 @@ router.get('/users', verifyToken, isAdmin, async (req: AuthRequest, res: Respons
     res.json({ users, total: users.length })
   } catch (err) {
     console.error('admin/users fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 
@@ -49,7 +49,7 @@ router.get('/users/:uid', verifyToken, isAdmin, async (req: AuthRequest, res: Re
     ])
 
     if (!userSnap.exists) {
-      res.status(404).json({ error: 'Bruger ikke fundet' })
+      res.status(404).json({ error: 'user_not_found', message: 'Bruger ikke fundet' })
       return
     }
 
@@ -64,7 +64,7 @@ router.get('/users/:uid', verifyToken, isAdmin, async (req: AuthRequest, res: Re
     })
   } catch (err) {
     console.error('admin/users/:uid fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 
@@ -73,7 +73,7 @@ router.patch('/users/:uid/tier', verifyToken, isAdmin, async (req: AuthRequest, 
   try {
     const { tierId } = req.body
     if (!tierId) {
-      res.status(400).json({ error: 'tierId mangler' })
+      res.status(400).json({ error: 'missing_tier_id', message: 'tierId mangler' })
       return
     }
 
@@ -81,7 +81,7 @@ router.patch('/users/:uid/tier', verifyToken, isAdmin, async (req: AuthRequest, 
     res.json({ updated: true, tierId })
   } catch (err) {
     console.error('admin/tier fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 
@@ -114,7 +114,7 @@ router.get('/revenue', verifyToken, isAdmin, async (req: AuthRequest, res: Respo
     res.json({ summary, totalRevenueDkk: totalRevenue, totalUsers: usersSnap.size })
   } catch (err) {
     console.error('admin/revenue fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 
@@ -136,7 +136,7 @@ router.get('/cost', verifyToken, isAdmin, async (req: AuthRequest, res: Response
     res.json({ totalCostUsd: totalCost, byType, byUser })
   } catch (err) {
     console.error('admin/cost fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 

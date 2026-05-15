@@ -56,7 +56,7 @@ router.get('/', async (req: Request, res: Response) => {
     res.json({ tiers })
   } catch (err) {
     console.error('tiers fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 
@@ -86,7 +86,7 @@ router.get('/usage', verifyToken, async (req: AuthRequest, res: Response) => {
     })
   } catch (err) {
     console.error('tiers/usage fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 
@@ -98,13 +98,13 @@ router.get('/:tierId', async (req: Request, res: Response) => {
       .doc(req.params.tierId)
       .get()
     if (!snap.exists) {
-      res.status(404).json({ error: 'Tier ikke fundet' })
+      res.status(404).json({ error: 'tier_not_found', message: 'Tier ikke fundet' })
       return
     }
     res.json({ tier: { id: snap.id, ...snap.data() } })
   } catch (err) {
     console.error('tiers/:id fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 
@@ -133,7 +133,7 @@ router.post('/check', verifyToken, async (req: AuthRequest, res: Response) => {
 
     const mapping = actionMap[action]
     if (!mapping) {
-      res.status(400).json({ error: 'Ukendt action' })
+      res.status(400).json({ error: 'unknown_action', message: 'Ukendt action' })
       return
     }
 
@@ -145,7 +145,7 @@ router.post('/check', verifyToken, async (req: AuthRequest, res: Response) => {
     res.json({ allowed, used, limit, tierId })
   } catch (err) {
     console.error('tiers/check fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 

@@ -39,7 +39,7 @@ router.post('/sync', authLimiter, verifyToken, async (req: AuthRequest, res: Res
     }
   } catch (err) {
     console.error('auth/sync fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 
@@ -53,7 +53,7 @@ router.get('/me', verifyToken, async (req: AuthRequest, res: Response) => {
       db.collection('users').doc(uid).collection('usage').doc('echolima').get()
     ])
     if (!userSnap.exists) {
-      res.status(404).json({ error: 'Bruger ikke fundet' })
+      res.status(404).json({ error: 'user_not_found', message: 'Bruger ikke fundet' })
       return
     }
     const tierId = userSnap.data()?.tierId ?? 'tier_free'
@@ -65,7 +65,7 @@ router.get('/me', verifyToken, async (req: AuthRequest, res: Response) => {
     res.json({ user: userSnap.data(), tier: tierSnap.data() ?? null, usage: usageSnap.data() ?? null })
   } catch (err) {
     console.error('auth/me fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 
@@ -81,7 +81,7 @@ router.patch('/me', verifyToken, async (req: AuthRequest, res: Response) => {
     res.json({ updated: true })
   } catch (err) {
     console.error('auth/patch fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 
