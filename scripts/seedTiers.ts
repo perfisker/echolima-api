@@ -3,7 +3,7 @@ import { getFirestore } from 'firebase-admin/firestore'
 import * as fs from 'fs'
 import * as path from 'path'
 
-const serviceAccountPath = path.resolve(__dirname, '../../service-account.json')
+const serviceAccountPath = path.resolve(__dirname, '../service-account.json')
 const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'))
 
 initializeApp({ credential: cert(serviceAccount) })
@@ -15,8 +15,8 @@ const db = getFirestore()
 const tiers = [
   {
     id: 'tier_free',
-    displayName: { da: 'Gratis', en: 'Free' },
-    description: { da: 'For dig der vil prøve VoiceNotes', en: 'For trying out' },
+    displayName: { da: 'Foxtrot', en: 'Foxtrot' },
+    description: { da: 'For dig der vil prøve ClickTalk', en: 'For trying out' },
     price: 0,
     currency: 'DKK',
     transcriptionsPerMonth: 10,
@@ -28,7 +28,7 @@ const tiers = [
   },
   {
     id: 'tier_basic',
-    displayName: { da: 'Let bruger', en: 'Basic' },
+    displayName: { da: 'Charlie', en: 'Charlie' },
     description: { da: 'Til den let-engagerede bruger', en: 'For light users' },
     price: 49,
     currency: 'DKK',
@@ -41,7 +41,7 @@ const tiers = [
   },
   {
     id: 'tier_pro',
-    displayName: { da: 'Professionel', en: 'Pro' },
+    displayName: { da: 'Papa', en: 'Papa' },
     description: { da: 'Fuld kraft inkl. fil-backup', en: 'Full power with file backup' },
     price: 99,
     currency: 'DKK',
@@ -54,7 +54,7 @@ const tiers = [
   },
   {
     id: 'tier_unlimited',
-    displayName: { da: 'Ubegrænset', en: 'Unlimited' },
+    displayName: { da: 'Echo', en: 'Echo' },
     description: { da: 'Custom enterprise-aftale', en: 'Custom enterprise plan' },
     price: -1,
     currency: 'DKK',
