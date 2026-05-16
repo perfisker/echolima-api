@@ -11,10 +11,12 @@
  *    med ground truth. Fanger drift hvis en increment/decrement fejlede.
  *
  * Forventet bucket-struktur:
- *   users/{uid}/<hvad-end>/...
+ *   {prefix}/{uid}/...
+ *   hvor {prefix} er én af USER_PATH_PREFIXES nedenfor.
  *
- * Hvis dine filer ligger anderledes (fx echolima/users/{uid}/...), tilpas
- * USER_PATH_REGEX nedenfor.
+ * Tilføj nye prefixes til USER_PATH_PREFIXES hvis Android-app'en begynder at
+ * uploade nye fil-typer (fx 'attachments', 'documents'). Både trigger-regex
+ * og reconcile-job bygges dynamisk ud fra listen — én kilde til sandhed.
  */
 
 import { initializeApp } from 'firebase-admin/app'
@@ -30,9 +32,16 @@ const db = getFirestore()
 const APP_ID = 'echolima'
 const REGION = 'europe-west1'  // Match dit Firebase-projekt-region
 
-// Matcher fil-stier på formen "users/{uid}/..." og udtrækker uid.
-// Tilpas hvis dine filer ligger under en anden prefix.
-const USER_PATH_REGEX = /^users\/([^/]+)\//
+// Top-level-mapper Android-app'en uploader til. Hver fil forventes at ligge
+// på formen "{prefix}/{uid}/...", hvor {prefix} matcher én af disse.
+// Tilføj nye prefixes her når Android-app'en udvider.
+const USER_PATH_PREFIXES = ['audio', 'images']
+
+// Dynamisk regex bygget fra prefix-listen. Matcher fx "audio/{uid}/..." eller
+// "images/{uid}/..." og udtrækker uid'et i capture-gruppen.
+const USER_PATH_REGEX = new RegExp(
+  `^(?:${USER_PATH_PREFIXES.join('|')})\\/([^/]+)\\/`
+)
 
 function extractUid(filePath: string | undefined): string | null {
   if (!filePath) return null
@@ -147,14 +156,16 @@ export const reconcileStorageUsage = onSchedule(
       totalUsers++
 
       try {
-        // List all files for this user under users/{uid}/...
-        const [files] = await bucket.getFiles({ prefix: `users/${uid}/` })
-
-        // Sum actual bytes
-        const trueBytes = files.reduce((sum, file) => {
-          const fileSize = parseInt(String(file.metadata.size ?? 0), 10)
-          return sum + (isNaN(fileSize) ? 0 : fileSize)
-        }, 0)
+        // List all files for this user across all known prefixes
+        // (audio/{uid}/..., images/{uid}/..., osv.) og summér samlet størrelse.
+        let trueBytes = 0
+        for (const prefix of USER_PATH_PREFIXES) {
+          const [files] = await bucket.getFiles({ prefix: `${prefix}/${uid}/` })
+          trueBytes += files.reduce((sum, file) => {
+            const fileSize = parseInt(String(file.metadata.size ?? 0), 10)
+            return sum + (isNaN(fileSize) ? 0 : fileSize)
+          }, 0)
+        }
 
         // Compare to Firestore
         const usageRef = db.collection('users').doc(uid)
