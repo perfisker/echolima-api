@@ -77,11 +77,19 @@ router.get('/usage', verifyToken, async (req: AuthRequest, res: Response) => {
     ])
     const usage = usageSnap.data() ?? {}
 
+    // storageMB i tier-doc'et er angivet i MB; konverter til bytes så app'en
+    // direkte kan vise progress mod faktiske usedBytes uden konvertering.
+    // -1 (ubegrænset) propagerer som -1 og lader app'en skjule/erstatte meteren.
+    const storageLimitBytes = tier.storageMB === -1
+      ? -1
+      : (tier.storageMB ?? 0) * 1024 * 1024
+
     res.json({
       tierId,
       transcriptions: { used: usage.transcriptions ?? 0, limit: tier.transcriptionsPerMonth ?? 0 },
       aiSummaries:    { used: usage.aiSummaries    ?? 0, limit: tier.aiSummariesPerMonth    ?? 0 },
       visionCalls:    { used: usage.visionCalls    ?? 0, limit: tier.visionCallsPerMonth    ?? 0 },
+      storage:        { usedBytes: usage.storageBytes ?? 0, limitBytes: storageLimitBytes },
       resetAt: usage.resetAt ?? null
     })
   } catch (err) {
