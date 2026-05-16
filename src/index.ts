@@ -28,22 +28,37 @@ initializeApp({
 })
 
 const app = express()
+
+// CRITICAL: Render kører bag deres egen reverse-proxy der tilføjer
+// X-Forwarded-For-header. Uden 'trust proxy' kan express-rate-limit ikke
+// identificere klienter via deres reelle IP — den bruger i stedet socket-IP
+// (Render's interne proxy-IP), så ALLE requests deler samme rate-limit-bucket.
+// Resultat: Render's health-check rammer 429 inden for få minutter, instance
+// markeres som unhealthy, processen restartes — og webhooks der lander mens
+// processen er nede får 502.
+// Værdien '1' = stol på første proxy-hop (Render's edge). Brug ikke 'true' der
+// stoler på vilkårligt antal hops og åbner for X-Forwarded-For-spoofing.
+app.set('trust proxy', 1)
+
 const PORT = process.env.PORT ?? 3000
 
 // Middleware
 app.use(helmet())
 app.use(cors())
 
+// Health check — placeret FØR rate-limiter (generalLimiter) så Render's
+// health-pings ikke regnes med i rate-budget'et. Et simpelt GET behøver hverken
+// body-parsing eller rate-limiting og bør have lavest mulig latency så
+// health-checks aldrig timer ud.
+app.get('/health', (_, res) => {
+  res.json({ status: 'ok', service: 'echolima-api', timestamp: Date.now() })
+})
+
 // Stripe webhook kræver raw body — registreres FØR express.json()
 app.use('/stripe/webhook', express.raw({ type: 'application/json' }))
 
 app.use(express.json({ limit: '10mb' }))
 app.use(generalLimiter)
-
-// Health check
-app.get('/health', (_, res) => {
-  res.json({ status: 'ok', service: 'echolima-api', timestamp: Date.now() })
-})
 
 // Stripe redirect sider
 app.get('/payment/success', (_, res) => {
@@ -76,9 +91,9 @@ app.use('/ai', aiRoutes)
 app.use('/email', emailRoutes)
 app.use('/stripe', stripeRoutes)
 
-// 404
+// 404 — opdateret til struktureret error-format for konsistens med øvrige endpoints
 app.use((_, res) => {
-  res.status(404).json({ error: 'Endpoint ikke fundet' })
+  res.status(404).json({ error: 'endpoint_not_found', message: 'Endpoint ikke fundet' })
 })
 
 app.listen(PORT, () => {
