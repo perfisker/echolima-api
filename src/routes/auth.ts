@@ -21,6 +21,7 @@ router.post('/sync', authLimiter, verifyToken, async (req: AuthRequest, res: Res
         displayName: user.name ?? '',
         photoURL: user.picture ?? '',
         tierId: 'tier_free',
+        defaultNiche: 'generel',
         createdAt: Date.now(),
         lastSeen: Date.now(),
         locale: 'da'
@@ -34,7 +35,13 @@ router.post('/sync', authLimiter, verifyToken, async (req: AuthRequest, res: Res
       })
       res.json({ created: true, tierId: 'tier_free' })
     } else {
-      await userRef.update({ lastSeen: Date.now() })
+      // Backfill defaultNiche på eksisterende user-docs der blev oprettet
+      // inden niche-feature blev introduceret (Step 5, 19. maj 2026).
+      const updates: Record<string, any> = { lastSeen: Date.now() }
+      if (!snap.data()?.defaultNiche) {
+        updates.defaultNiche = 'generel'
+      }
+      await userRef.update(updates)
       res.json({ created: false, tierId: snap.data()?.tierId ?? 'tier_free' })
     }
   } catch (err) {
@@ -69,14 +76,39 @@ router.get('/me', verifyToken, async (req: AuthRequest, res: Response) => {
   }
 })
 
-// PATCH /auth/me — opdater locale eller displayName
+// PATCH /auth/me — opdater locale, displayName eller defaultNiche
 router.patch('/me', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const uid = req.user!.uid
-    const { locale, displayName } = req.body
+    const { locale, displayName, defaultNiche } = req.body
     const updates: Record<string, string> = {}
     if (locale) updates.locale = locale
     if (displayName) updates.displayName = displayName
+
+    // defaultNiche-validering: skal være en eksisterende AKTIV niche.
+    // Vi henter direkte fra Firestore (ikke via getNiche()-cache i ai.ts)
+    // for at undgå cross-route imports. PATCH er sjælden så cache-besparelsen
+    // er minimal.
+    if (defaultNiche !== undefined) {
+      if (typeof defaultNiche !== 'string') {
+        res.status(400).json({
+          error: 'invalid_default_niche',
+          message: 'defaultNiche skal være en string'
+        })
+        return
+      }
+      const db = getFirestore()
+      const nicheSnap = await db.collection('niches').doc(defaultNiche).get()
+      if (!nicheSnap.exists || nicheSnap.data()?.isActive !== true) {
+        res.status(400).json({
+          error: 'unknown_niche',
+          message: `Niche '${defaultNiche}' findes ikke eller er deaktiveret`
+        })
+        return
+      }
+      updates.defaultNiche = defaultNiche
+    }
+
     await getFirestore().collection('users').doc(uid).update(updates)
     res.json({ updated: true })
   } catch (err) {
