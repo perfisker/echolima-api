@@ -13,6 +13,7 @@ import appsRoutes from './routes/apps'
 import aiRoutes from './routes/ai'
 import emailRoutes from './routes/email'
 import stripeRoutes from './routes/stripe'
+import nichesRoutes from './routes/niches'
 
 dotenv.config()
 
@@ -90,6 +91,7 @@ app.use('/apps', appsRoutes)
 app.use('/ai', aiRoutes)
 app.use('/email', emailRoutes)
 app.use('/stripe', stripeRoutes)
+app.use('/niches', nichesRoutes)
 
 // 404 — opdateret til struktureret error-format for konsistens med øvrige endpoints
 app.use((_, res) => {
