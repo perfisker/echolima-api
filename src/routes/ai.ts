@@ -105,6 +105,31 @@ async function getUserTier(uid: string): Promise<string> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Prompt-byggeri (niche-baseret)
+//
+// buildPrompt substituerer {{transcription}}-placeholder med brugerens reelle
+// transskription, og tilføjer optional vision-suffix når billeder er vedlagt.
+// Vision-suffixet instruerer GPT-4o i at returnere imageTranscription som et
+// ARRAY (ét element per billede) i stedet for en enkelt string — designet til
+// multi-billede support indført i Step 8.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const VISION_PROMPT_SUFFIX = `
+
+Et eller flere billeder er vedlagt.
+- Inkorporér relevante visuelle detaljer i din analyse (fx opmålinger, skader, produktmærker)
+- Tilføj feltet "imageTranscription" som et array — ét element per billede med al synlig tekst, eller null hvis billedet ikke indeholder tekst
+- Returner array selv ved ét billede: ["tekst fra billede 1"]`
+
+function buildPrompt(niche: NicheDoc, transcription: string, withVision = false): string {
+  let prompt = niche.prompt.replace('{{transcription}}', transcription)
+  if (withVision) {
+    prompt += VISION_PROMPT_SUFFIX
+  }
+  return prompt
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Retry-logik til OpenAI rate limits
 //
 // Ved 429 (rate limit) venter vi eksponentielt og prøver igen.
@@ -287,7 +312,7 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
           })
           return
         }
-        promptText = niche.prompt.replace('{{transcription}}', transcription)
+        promptText = buildPrompt(niche, transcription, false)
         resolvedNicheId = nicheId
       }
     } else {
@@ -336,46 +361,114 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
 })
 
 // POST /ai/vision
-// Multipart: field "image" (image/*), field "transcription" (text)
-// Returns: { title, summary, tasks, imageTranscription }
-router.post('/vision', verifyToken, upload.single('image'), async (req: AuthRequest, res: Response) => {
-  try {
-    if (!req.file) {
-      res.status(400).json({ error: 'Intet billede vedhæftet' })
-      return
-    }
-    const transcription = (req.body.transcription as string) ?? ''
-    const openai = getOpenAI()
-    const base64 = req.file.buffer.toString('base64')
-    const mimeType = req.file.mimetype ?? 'image/jpeg'
+// Multipart fields:
+//   - "images" (image/*, 1-10 stk) — nyt felt til multi-billede support
+//   - "image" (image/*, 1 stk) — legacy felt, accepteres for backward-compat
+//   - body.transcription (text)
+//   - body.nicheId (text, optional) — defaulter til 'generel'
+//
+// Returns: niche-struktureret JSON + imageTranscription: string[] | null
+//          (array har samme længde som antal indsendte billeder)
+//
+// upload.fields() accepterer begge felt-navne i samme request. Klienter
+// kan migrere fra single 'image' til multi 'images' uden koordineret deploy.
+router.post(
+  '/vision',
+  verifyToken,
+  upload.fields([
+    { name: 'image', maxCount: 1 },     // legacy
+    { name: 'images', maxCount: 10 }    // multi-billede
+  ]),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      // Backward-compat shim: kombinér begge felter til ét files-array.
+      // Hvis klient sender begge (sjældent), tager vi alle med — multer
+      // har allerede maxCount-grænser per felt.
+      const filesObj = (req.files ?? {}) as Record<string, Express.Multer.File[]>
+      const files = [...(filesObj.image ?? []), ...(filesObj.images ?? [])]
 
-    const completion = await callWithRetry(() =>
-      openai.chat.completions.create({
-        model: 'gpt-4o',
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: visionPrompt(transcription) },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `data:${mimeType};base64,${base64}`,
-                detail: 'low'
-              }
-            }
-          ]
-        }],
-        max_tokens: 1500,
-        response_format: { type: 'json_object' }
-      })
-    )
-    const content = completion.choices[0].message.content ?? '{}'
-    res.json(JSON.parse(content))
-  } catch (err) {
-    console.error('ai/vision fejl:', err)
-    res.status(500).json({ error: 'Vision-analyse fejlede' })
+      if (files.length === 0) {
+        res.status(400).json({ error: 'Intet billede vedhæftet' })
+        return
+      }
+
+      const transcription = (req.body.transcription as string) ?? ''
+      const nicheId = req.body.nicheId as string | undefined
+      const uid = req.user!.uid
+
+      // Niche-resolution: default til 'generel' hvis ikke specificeret.
+      // Modsat /ai/analyze (hvor generel = legacy analyzePrompt) bruger /ai/vision
+      // ALTID en niche fra Firestore + vision-suffix — det er den eneste måde
+      // GPT-4o får besked om at returnere imageTranscription som array.
+      const effectiveNicheId = (typeof nicheId === 'string' && nicheId.length > 0)
+        ? nicheId
+        : 'generel'
+
+      const niche = await getNiche(effectiveNicheId)
+
+      let promptText: string
+      if (niche === null) {
+        // Niche findes ikke eller er deaktiveret → emergency-fallback til
+        // legacy visionPrompt. Bemærk: dette returnerer imageTranscription
+        // som single string, IKKE array. Bør være ekstremt sjælden situation
+        // (kun hvis 'generel' selv mangler i Firestore).
+        console.warn(`ai/vision: niche '${effectiveNicheId}' findes ikke eller er deaktiveret — bruger legacy visionPrompt`)
+        promptText = visionPrompt(transcription)
+      } else {
+        // Tier-check skippes for 'generel' (alle har adgang). For andre niches
+        // returnerer vi 403 hvis brugerens tier er utilstrækkeligt.
+        if (effectiveNicheId !== 'generel') {
+          const userTier = await getUserTier(uid)
+          if (!tierMeetsMinimum(userTier, niche.minTier)) {
+            res.status(403).json({
+              error: 'niche_tier_required',
+              message: `Denne niche kræver ${niche.displayName.da}-abonnement eller højere`
+            })
+            return
+          }
+        }
+        promptText = buildPrompt(niche, transcription, true)
+      }
+
+      // Byg dynamisk content-array til GPT-4o med ét image_url-element per
+      // billede. detail: 'low' holder cost nede (~85 tokens per image)
+      // versus 'high' (~170-2000 tokens per image afhængigt af dimensioner).
+      const imageContents = files.map(file => ({
+        type: 'image_url' as const,
+        image_url: {
+          url: `data:${file.mimetype ?? 'image/jpeg'};base64,${file.buffer.toString('base64')}`,
+          detail: 'low' as const
+        }
+      }))
+
+      // max_tokens skalerer med billed-antal fordi imageTranscription-array
+      // også vokser. Base 1500 (samme som single-image før) + 200 per ekstra
+      // billede til ekstra transskription.
+      const maxTokens = 1500 + (files.length * 200)
+
+      const openai = getOpenAI()
+      const completion = await callWithRetry(() =>
+        openai.chat.completions.create({
+          model: 'gpt-4o',
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: promptText },
+              ...imageContents
+            ]
+          }],
+          max_tokens: maxTokens,
+          response_format: { type: 'json_object' }
+        })
+      )
+      const content = completion.choices[0].message.content ?? '{}'
+      res.json(JSON.parse(content))
+    } catch (err) {
+      console.error('ai/vision fejl:', err)
+      res.status(500).json({ error: 'Vision-analyse fejlede' })
+    }
   }
-})
+)
 
 // POST /ai/parse-command
 // Body: { spokenText, contactNames, tasks }
