@@ -2,6 +2,7 @@ import { Router, Response } from 'express'
 import { getFirestore } from 'firebase-admin/firestore'
 import { AuthRequest } from '../types'
 import { verifyToken, isAdmin } from '../middleware/auth'
+import { clearNicheCache } from './ai'
 
 const router = Router()
 
@@ -136,6 +137,97 @@ router.get('/cost', verifyToken, isAdmin, async (req: AuthRequest, res: Response
     res.json({ totalCostUsd: totalCost, byType, byUser })
   } catch (err) {
     console.error('admin/cost fejl:', err)
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
+  }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /admin/niche-stats — fordeling af AI-kald per niche
+//
+// Aggregerer alle aiSummary-events grupperet på nicheId. Bruges af et evt.
+// admin-dashboard til at se hvilke niches der bruges mest i praksis.
+//
+// "unknown"-bucket'en fanger gamle aiSummary-events fra før Step 3-deploy
+// (19. maj 2026) hvor nicheId-feltet ikke fandtes. Skal naturligt skrumpe
+// over tid efterhånden som ny trafik dominerer.
+//
+// NB: med mange events bliver dette dyrt — alle events læses i hukommelse.
+// Hvis events-collection vokser til >10K, refactor til Firestore aggregation
+// queries eller scheduled rollup-job.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/niche-stats', verifyToken, isAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const db = getFirestore()
+
+    // Hent alle aiSummary-events (de eneste med nicheId)
+    const eventsSnap = await db.collection('events')
+      .where('type', '==', 'aiSummary')
+      .get()
+
+    // Aggregér tæller per nicheId
+    const counts: Record<string, number> = {}
+    eventsSnap.docs.forEach(doc => {
+      const nicheId = doc.data().nicheId ?? 'unknown'
+      counts[nicheId] = (counts[nicheId] ?? 0) + 1
+    })
+
+    const total = eventsSnap.size
+
+    // Hent displayName fra niches-collection (én batch read)
+    const nichesSnap = await db.collection('niches').get()
+    const displayNames: Record<string, string> = {}
+    nichesSnap.docs.forEach(doc => {
+      const data = doc.data()
+      displayNames[doc.id] = data.displayName?.da ?? doc.id
+    })
+
+    // Byg stats-array sorteret efter count desc
+    const stats = Object.entries(counts)
+      .map(([nicheId, count]) => ({
+        nicheId,
+        displayName: displayNames[nicheId] ?? nicheId,
+        count,
+        pct: total > 0 ? Math.round((count / total) * 100) : 0
+      }))
+      .sort((a, b) => b.count - a.count)
+
+    res.json({
+      period: 'all-time',
+      stats,
+      total
+    })
+  } catch (err) {
+    console.error('admin/niche-stats fejl:', err)
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
+  }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /admin/niches/invalidate-cache — tving niche-cache refresh
+//
+// Body: { nicheId?: string }
+//   - nicheId udeladt → ryd HELE cache (alle niches refreshes ved næste read)
+//   - nicheId angivet → ryd kun den specifikke niche fra cache
+//
+// Brug-case: når du har redigeret en niche-prompt direkte i Firestore Console
+// og vil have ændringen til at slå igennem inden den indbyggede 5-min TTL
+// udløber. Uden dette endpoint skal du vente op til 5 minutter.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/niches/invalidate-cache', verifyToken, isAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const { nicheId } = req.body
+    if (nicheId !== undefined && typeof nicheId !== 'string') {
+      res.status(400).json({
+        error: 'invalid_niche_id',
+        message: 'nicheId skal være en string eller udeladt'
+      })
+      return
+    }
+
+    clearNicheCache(nicheId)
+    res.json({ cleared: nicheId ?? 'all' })
+  } catch (err) {
+    console.error('admin/niches/invalidate-cache fejl:', err)
     res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
