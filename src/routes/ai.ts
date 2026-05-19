@@ -117,9 +117,13 @@ async function getUserTier(uid: string): Promise<string> {
 const VISION_PROMPT_SUFFIX = `
 
 Et eller flere billeder er vedlagt.
-- Inkorporér relevante visuelle detaljer i din analyse (fx opmålinger, skader, produktmærker)
-- Tilføj feltet "imageTranscription" som et array — ét element per billede med al synlig tekst, eller null hvis billedet ikke indeholder tekst
-- Returner array selv ved ét billede: ["tekst fra billede 1"]`
+- Inkorporér ALLE billeders indhold (synlig tekst, objekter, måling, observationer, mærker) i "summary" og "tasks" så brugeren får et samlet overblik på tværs af billeder
+- Tilføj feltet "imageTranscription" som et array — ét element per billede med opsummering af DET billedes indhold:
+  · Hvis billedet indeholder synlig tekst: gengiv teksten (bevar formatering hvor det giver mening)
+  · Hvis billedet ikke har tekst: kort visuel beskrivelse (fx "Billede af lækkende rør under håndvask, ca. 22mm dimension")
+  · Brug KUN null hvis billedet er helt tomt, ulæseligt eller defekt
+- Antallet af elementer i arrayet skal MATCHE antallet af indsendte billeder, i samme rækkefølge
+- Returner array selv ved ét billede: ["indhold af billede 1"]`
 
 function buildPrompt(niche: NicheDoc, transcription: string, withVision = false): string {
   let prompt = niche.prompt.replace('{{transcription}}', transcription)
