@@ -26,20 +26,27 @@ router.post('/record', verifyToken, async (req: AuthRequest, res: Response) => {
     const db = getFirestore()
     const batch = db.batch()
 
-    // Inkrementer usage-tæller
+    // Inkrementer usage-tæller (også for aiSummary — det fortsætter med at
+    // ramme månedens kvote)
     const usageRef = db.collection('users').doc(uid).collection('usage').doc(appId)
     batch.update(usageRef, { [field]: FieldValue.increment(1) })
 
-    // Log event til admin-analyse
-    const eventRef = db.collection('events').doc()
-    batch.set(eventRef, {
-      uid,
-      appId,
-      type: action,
-      timestamp: Date.now(),
-      tokens,
-      costUsd
-    })
+    // Event-log — SKIP for aiSummary. Hybrid-arbejdsdeling (c):
+    //   - /ai/analyze ejer aiSummary event-rækker (har nicheId-kontekst)
+    //   - /usage/record ejer alle andre event-typer (transcription, visionCall)
+    //     samt alle counter-increments
+    // Forhindrer dobbelt-logning af aiSummary uden Android-koordination.
+    if (action !== 'aiSummary') {
+      const eventRef = db.collection('events').doc()
+      batch.set(eventRef, {
+        uid,
+        appId,
+        type: action,
+        timestamp: Date.now(),
+        tokens,
+        costUsd
+      })
+    }
 
     await batch.commit()
     res.json({ recorded: true })

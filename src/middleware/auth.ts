@@ -38,12 +38,18 @@ export async function isAdmin(req: AuthRequest, res: Response, next: NextFunctio
 }
 
 // Hjælpefunktion: hent brugerens tier og usage fra Firestore
+//
+// NB: tiers-collection bruger flade doc-IDs uden app-prefix (fx "tier_basic",
+// ikke "echolima_tier_basic"). Det blev fixet 15. maj 2026 i routes/auth.ts
+// L60-bug, men samme mønster lurede her uden at være opdaget. Helperen er pt.
+// ikke aktivt brugt af nogen route, men er nu correct hvis den senere tages
+// i brug.
 export async function getUserTierAndUsage(uid: string, appId: string) {
   const db = getFirestore()
   const userSnap = await db.collection('users').doc(uid).get()
-  const tierId = userSnap.data()?.tierId ?? 'free'
+  const tierId = userSnap.data()?.tierId ?? 'tier_free'
 
-  const tierSnap = await db.collection('tiers').doc(`${appId}_${tierId}`).get()
+  const tierSnap = await db.collection('tiers').doc(tierId).get()
   const usageSnap = await db.collection('users').doc(uid)
     .collection('usage').doc(appId).get()
 
