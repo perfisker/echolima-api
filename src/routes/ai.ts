@@ -268,9 +268,6 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
 
     const uid = req.user!.uid
 
-    // DIAGNOSTIC LOG — kan fjernes når vi har bekræftet event-logging-flow
-    console.log(`[ai/analyze] called by uid=${uid}, nicheId=${nicheId ?? '(none)'}`)
-
     // Bestem effektiv prompt + niche-id til event-logging.
     let promptText: string
     let resolvedNicheId: string = 'generel'
@@ -314,9 +311,7 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
     try {
       const db = getFirestore()
       const totalTokens = completion.usage?.total_tokens ?? 0
-      // DIAGNOSTIC LOG
-      console.log(`[ai/analyze] writing event for uid=${uid}, nicheId=${resolvedNicheId}, tokens=${totalTokens}`)
-      const eventRef = await db.collection('events').add({
+      await db.collection('events').add({
         uid,
         appId: 'echolima',
         type: 'aiSummary',
@@ -329,8 +324,6 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
         // cost-tracking kræves.
         costUsd: totalTokens * 0.000000375
       })
-      // DIAGNOSTIC LOG
-      console.log(`[ai/analyze] event written: ${eventRef.id}`)
     } catch (logErr) {
       console.error('ai/analyze event-log fejl (response sendes alligevel):', logErr)
     }
