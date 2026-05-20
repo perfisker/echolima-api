@@ -5,30 +5,52 @@ export interface AuthRequest extends Request {
   user?: DecodedIdToken
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Tier-grænser og forbrug (counter-refactor 20. maj 2026)
+//
+// Counter-modellen er forenklet fra tre tællere (transcriptions/aiSummaries/
+// visionCalls) til to bruger-vendte counters:
+//
+//   voiceNotes  = noter UDEN billeder (voice-only)
+//   cameraNotes = noter MED billeder (camera+voice)
+//
+// Plus storageBytes for fil-størrelse. Internt logger backend stadig hver
+// OpenAI-kald som separat event i events-collection for cost-analyse, men
+// dem ser brugeren ikke. Tier-grænser og /tiers/check arbejder kun mod de to
+// counters ovenfor.
+//
+// -1 betyder ubegrænset.
+// ─────────────────────────────────────────────────────────────────────────────
+
 export interface TierLimits {
-  transcriptions: number   // per måned, -1 = ubegrænset
-  visionCalls: number
-  aiSummaries: number
-  storageGB: number
-  maxNoteDurationSeconds: number
+  voiceNotesPerMonth: number   // -1 = ubegrænset
+  cameraNotesPerMonth: number
+  storageMB: number
 }
 
 export interface Tier {
   id: string
-  name: string
-  appId: string
-  priceMonthly: number
-  limits: TierLimits
-  features: string[]
+  displayName: { da: string; en: string }
+  description: { da: string; en: string }
+  price: number
+  currency: string
+  voiceNotesPerMonth: number
+  cameraNotesPerMonth: number
+  storageMB: number
+  active: boolean
+  order: number
 }
 
 export interface UsageRecord {
-  transcriptions: number
-  visionCalls: number
-  aiSummaries: number
-  storageBytes: number
-  resetAt: number
+  voiceNotes: number       // antal voice-only noter denne periode
+  cameraNotes: number      // antal camera+voice noter denne periode
+  storageBytes: number     // samlet størrelse af filer i Firebase Storage
+  resetAt: number          // timestamp for sidste månedlige nulstilling
 }
+
+// User-facing action type for POST /usage/record
+// Backend mapper internt til counter-felter på UsageRecord
+export type UsageAction = 'voiceNote' | 'cameraNote'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Niches (AI-pipeline MOAT)

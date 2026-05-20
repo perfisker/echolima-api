@@ -5,54 +5,51 @@ import { verifyToken, isAdmin } from '../middleware/auth'
 
 const router = Router()
 
-// POST /usage/record — registrer ét AI-kald
+// POST /usage/record — registrer at en note er færdig-behandlet
+//
+// Body: { action: 'voiceNote' | 'cameraNote', appId?: string }
+//
+// Kaldes ÉN GANG per note-completion fra klienten — ikke længere én gang per
+// underliggende AI-kald. Modellen er forenklet fra tre tællere til to:
+//
+//   action='voiceNote'  → users/{uid}/usage/{appId}.voiceNotes  += 1
+//   action='cameraNote' → users/{uid}/usage/{appId}.cameraNotes += 1
+//
+// Events-logging i events-collection sker direkte fra /ai/analyze (for
+// aiSummary med nicheId) og /ai/vision (for visionCall). /usage/record
+// fokuserer udelukkende på den bruger-vendte counter-increment.
 router.post('/record', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const uid = req.user!.uid
-    const { action, appId = 'echolima', tokens = 0, costUsd = 0 } = req.body
+    const { action, appId = 'echolima' } = req.body
 
-    // action: 'transcription' | 'visionCall' | 'aiSummary'
     const fieldMap: Record<string, string> = {
-      transcription: 'transcriptions',
-      visionCall:    'visionCalls',
-      aiSummary:     'aiSummaries'
+      voiceNote:  'voiceNotes',
+      cameraNote: 'cameraNotes'
     }
     const field = fieldMap[action]
     if (!field) {
-      res.status(400).json({ error: 'Ukendt action' })
+      res.status(400).json({
+        error: 'unknown_action',
+        message: 'Ukendt action — forventet voiceNote eller cameraNote'
+      })
       return
     }
 
     const db = getFirestore()
-    const batch = db.batch()
-
-    // Inkrementer usage-tæller (også for aiSummary — det fortsætter med at
-    // ramme månedens kvote)
     const usageRef = db.collection('users').doc(uid).collection('usage').doc(appId)
-    batch.update(usageRef, { [field]: FieldValue.increment(1) })
 
-    // Event-log — SKIP for aiSummary. Hybrid-arbejdsdeling (c):
-    //   - /ai/analyze ejer aiSummary event-rækker (har nicheId-kontekst)
-    //   - /usage/record ejer alle andre event-typer (transcription, visionCall)
-    //     samt alle counter-increments
-    // Forhindrer dobbelt-logning af aiSummary uden Android-koordination.
-    if (action !== 'aiSummary') {
-      const eventRef = db.collection('events').doc()
-      batch.set(eventRef, {
-        uid,
-        appId,
-        type: action,
-        timestamp: Date.now(),
-        tokens,
-        costUsd
-      })
-    }
+    // Bruger set+merge så vi ikke fejler hvis usage-doc'et endnu ikke findes
+    // (kan ske ved første note efter signup hvis /auth/sync ikke har kørt endnu).
+    await usageRef.set(
+      { [field]: FieldValue.increment(1) },
+      { merge: true }
+    )
 
-    await batch.commit()
     res.json({ recorded: true })
   } catch (err) {
     console.error('usage/record fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 
@@ -68,7 +65,7 @@ router.get('/me', verifyToken, async (req: AuthRequest, res: Response) => {
     res.json({ usage: snap.data() ?? null })
   } catch (err) {
     console.error('usage/me fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 
@@ -92,16 +89,18 @@ router.post('/reset', verifyToken, isAdmin, async (req: AuthRequest, res: Respon
       const snap = await query.get()
       if (snap.empty) break
 
-      // Batch-opdater usage for denne gruppe
+      // Batch-opdater usage for denne gruppe.
+      // NB: storageBytes nulstilles IKKE — det er aktuel-state, ikke en
+      // månedlig counter. Det vedligeholdes via Cloud Functions
+      // (onStorageUpload/onStorageDelete) og reconcileStorageUsage.
       const batch = db.batch()
       snap.docs.forEach(userDoc => {
         const usageRef = db.collection('users').doc(userDoc.id)
           .collection('usage').doc(appId)
         batch.update(usageRef, {
-          transcriptions: 0,
-          visionCalls:    0,
-          aiSummaries:    0,
-          resetAt:        Date.now()
+          voiceNotes:  0,
+          cameraNotes: 0,
+          resetAt:     Date.now()
         })
       })
       await batch.commit()
@@ -116,7 +115,7 @@ router.post('/reset', verifyToken, isAdmin, async (req: AuthRequest, res: Respon
     res.json({ reset: true, users: processed })
   } catch (err) {
     console.error('usage/reset fejl:', err)
-    res.status(500).json({ error: 'Serverfejl' })
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
   }
 })
 

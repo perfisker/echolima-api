@@ -11,17 +11,25 @@ initializeApp({ credential: cert(serviceAccount) })
 const db = getFirestore()
 
 // Tier-IDs er opaque (Arch #2 migration). Visning af navne/beskrivelser sker
-// nu via displayName + description fra dette doc — ikke længere via strings.xml.
+// via displayName + description på dette doc — ikke længere via strings.xml.
+//
+// Counter-model (refactored 20. maj 2026):
+//   voiceNotesPerMonth  = quota for noter UDEN billeder (voice-only)
+//   cameraNotesPerMonth = quota for noter MED billeder (camera+voice)
+//   storageMB           = grænse for samlet fil-storage i Firebase Storage
+//
+// Bagved kulisserne tæller hver voice-only note ét /ai/transcribe + ét
+// /ai/analyze, hver kamera-note tæller transcribe + describe-images + analyze.
+// Brugeren ser kun de to aggregerede counters. -1 betyder ubegrænset.
 const tiers = [
   {
     id: 'tier_free',
     displayName: { da: 'Foxtrot', en: 'Foxtrot' },
-    description: { da: 'For dig der vil prøve ClickTalk', en: 'For trying out' },
+    description: { da: 'For dig der vil prøve AidKick', en: 'For trying out AidKick' },
     price: 0,
     currency: 'DKK',
-    transcriptionsPerMonth: 10,
-    visionCallsPerMonth: 5,
-    aiSummariesPerMonth: 5,
+    voiceNotesPerMonth: 5,
+    cameraNotesPerMonth: 3,
     storageMB: 100,
     active: true,
     order: 1,
@@ -32,9 +40,8 @@ const tiers = [
     description: { da: 'Til den let-engagerede bruger', en: 'For light users' },
     price: 49,
     currency: 'DKK',
-    transcriptionsPerMonth: 100,
-    visionCallsPerMonth: 50,
-    aiSummariesPerMonth: 50,
+    voiceNotesPerMonth: 50,
+    cameraNotesPerMonth: 30,
     storageMB: 1000,
     active: true,
     order: 2,
@@ -45,10 +52,9 @@ const tiers = [
     description: { da: 'Fuld kraft inkl. fil-backup', en: 'Full power with file backup' },
     price: 99,
     currency: 'DKK',
-    transcriptionsPerMonth: 500,
-    visionCallsPerMonth: 200,
-    aiSummariesPerMonth: 200,
-    storageMB: 10000,
+    voiceNotesPerMonth: 200,
+    cameraNotesPerMonth: 100,
+    storageMB: 5000,
     active: true,
     order: 3,
   },
@@ -58,9 +64,8 @@ const tiers = [
     description: { da: 'Custom enterprise-aftale', en: 'Custom enterprise plan' },
     price: -1,
     currency: 'DKK',
-    transcriptionsPerMonth: -1,
-    visionCallsPerMonth: -1,
-    aiSummariesPerMonth: -1,
+    voiceNotesPerMonth: -1,
+    cameraNotesPerMonth: -1,
     storageMB: -1,
     active: true,
     order: 4,
@@ -79,7 +84,7 @@ async function seedTiers() {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     })
-    console.log(`  ✓ ${tier.id}`)
+    console.log(`  ✓ ${tier.id} (voice: ${tier.voiceNotesPerMonth}, camera: ${tier.cameraNotesPerMonth}, storage: ${tier.storageMB} MB)`)
   }
 
   await batch.commit()

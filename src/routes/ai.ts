@@ -252,6 +252,8 @@ router.post('/transcribe', verifyToken, upload.single('file'), async (req: AuthR
       res.status(400).json({ error: 'Ingen lydfil vedhæftet' })
       return
     }
+    const uid = req.user!.uid
+    const fileSize = req.file.size
     const openai = getOpenAI()
     const audioFile = await toFile(req.file.buffer, req.file.originalname ?? 'audio.m4a', {
       type: req.file.mimetype ?? 'audio/m4a'
@@ -263,6 +265,28 @@ router.post('/transcribe', verifyToken, upload.single('file'), async (req: AuthR
         language: 'da'
       })
     )
+
+    // Event-logging — fanger transcription-events til /admin/cost-rapportering.
+    // Whisper koster $0.006/minut audio. Vi kan ikke nemt udlede minutter fra
+    // request, så vi bruger filstørrelse som proxy. AAC 128kbps ≈ 1 MB/min,
+    // så bytes/1_048_576 ≈ minutter. Rough estimate; admin-dashboard kan
+    // efterjustere hvis vi senere fanger faktisk varighed fra audio-headers.
+    try {
+      const db = getFirestore()
+      const estimatedMinutes = fileSize / (1024 * 1024)
+      await db.collection('events').add({
+        uid,
+        appId: 'echolima',
+        type: 'transcription',
+        timestamp: Date.now(),
+        tokens: 0,                                  // whisper er ikke token-baseret
+        costUsd: estimatedMinutes * 0.006,          // Whisper: $0.006/min
+        audioBytes: fileSize
+      })
+    } catch (logErr) {
+      console.error('ai/transcribe event-log fejl (response sendes alligevel):', logErr)
+    }
+
     res.json({ text: transcription.text })
   } catch (err) {
     console.error('ai/transcribe fejl:', err)
@@ -466,6 +490,28 @@ router.post(
         })
       )
       const content = completion.choices[0].message.content ?? '{}'
+
+      // Event-logging — fanger visionCall-events til /admin/cost og
+      // /admin/niche-stats. Inkluderer både nicheId (til stats) og imageCount
+      // (til granular cost-analyse).
+      // gpt-4o pris: input $2.50/1M + output $10/1M ≈ blandet $6.25/1M = $0.00000625/token
+      try {
+        const db = getFirestore()
+        const totalTokens = completion.usage?.total_tokens ?? 0
+        await db.collection('events').add({
+          uid,
+          appId: 'echolima',
+          type: 'visionCall',
+          nicheId: effectiveNicheId,
+          timestamp: Date.now(),
+          tokens: totalTokens,
+          imageCount: files.length,
+          costUsd: totalTokens * 0.00000625
+        })
+      } catch (logErr) {
+        console.error('ai/vision event-log fejl (response sendes alligevel):', logErr)
+      }
+
       res.json(JSON.parse(content))
     } catch (err) {
       console.error('ai/vision fejl:', err)

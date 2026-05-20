@@ -86,10 +86,9 @@ router.get('/usage', verifyToken, async (req: AuthRequest, res: Response) => {
 
     res.json({
       tierId,
-      transcriptions: { used: usage.transcriptions ?? 0, limit: tier.transcriptionsPerMonth ?? 0 },
-      aiSummaries:    { used: usage.aiSummaries    ?? 0, limit: tier.aiSummariesPerMonth    ?? 0 },
-      visionCalls:    { used: usage.visionCalls    ?? 0, limit: tier.visionCallsPerMonth    ?? 0 },
-      storage:        { usedBytes: usage.storageBytes ?? 0, limitBytes: storageLimitBytes },
+      voiceNotes:  { used: usage.voiceNotes  ?? 0, limit: tier.voiceNotesPerMonth  ?? 0 },
+      cameraNotes: { used: usage.cameraNotes ?? 0, limit: tier.cameraNotesPerMonth ?? 0 },
+      storage:     { usedBytes: usage.storageBytes ?? 0, limitBytes: storageLimitBytes },
       resetAt: usage.resetAt ?? null
     })
   } catch (err) {
@@ -133,10 +132,15 @@ router.post('/check', verifyToken, async (req: AuthRequest, res: Response) => {
     ])
     const usage = usageSnap.data() ?? {}
 
+    // User-facing action types (counter-refactor 20. maj 2026):
+    //   voiceNote  = note uden billede (intern: transcribe + analyze)
+    //   cameraNote = note med billede(r) (intern: transcribe + describe-images + analyze)
+    // Backend's events-collection logger stadig de individuelle AI-kald
+    // (transcription/aiSummary/visionCall) til cost-analyse i /admin/cost,
+    // men /tiers/check og /usage/record bruger kun de aggregerede counters.
     const actionMap: Record<string, { tierField: string; usageField: string }> = {
-      transcription: { tierField: 'transcriptionsPerMonth', usageField: 'transcriptions' },
-      visionCall:    { tierField: 'visionCallsPerMonth',    usageField: 'visionCalls' },
-      aiSummary:     { tierField: 'aiSummariesPerMonth',    usageField: 'aiSummaries' }
+      voiceNote:  { tierField: 'voiceNotesPerMonth',  usageField: 'voiceNotes' },
+      cameraNote: { tierField: 'cameraNotesPerMonth', usageField: 'cameraNotes' }
     }
 
     const mapping = actionMap[action]
