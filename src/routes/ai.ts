@@ -134,6 +134,92 @@ function buildPrompt(niche: NicheDoc, transcription: string, withVision = false)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PII (personhenførbar information) detektion
+//
+// Hybrid approach:
+//   1) Regex fanger deterministiske mønstre (CPR, telefon, email, IBAN, kort)
+//   2) AI-prompt-addendum beder modellen flagge kontekstuelle PII'er
+//      (navne, adresser, fødselsdatoer, helbreds-/finans-info)
+//
+// Server-side mergeres begge resultater. Defensiv-tilgang: hvis AI'en
+// glemmer at tilføje felterne, sikrer regex at vi alligevel fanger åbenlys
+// PII. Tilsvarende fanger AI ting regex aldrig kan (sammenhænge, kontekst).
+//
+// Bruges af /ai/analyze og /ai/vision. Suffix appendes ALTID til den endelige
+// prompt (på tværs af niche/fallback-paths), så PII-detektion er konsistent
+// for alle bruger-flows.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PII_REGEX_PATTERNS: Array<{ type: string; pattern: RegExp }> = [
+  // CPR-nummer: DDMMYY[-]XXXX. Validerer dag 01-31 + måned 01-12 for at
+  // undgå at matche tilfældige 10-cifrede tal som ordretal eller årstal.
+  { type: 'cpr', pattern: /\b(0[1-9]|[12]\d|3[01])(0[1-9]|1[0-2])\d{2}[-\s]?\d{4}\b/ },
+  // Dansk telefon: 8 cifre i grupper af 2, evt. med +45 og mellemrum/bindestreg
+  { type: 'phone', pattern: /\b(?:\+45[\s-]?)?\d{2}[\s-]?\d{2}[\s-]?\d{2}[\s-]?\d{2}\b/ },
+  // Email
+  { type: 'email', pattern: /\b[\w.+-]+@[\w-]+\.[\w.-]+\b/ },
+  // Dansk IBAN: DK + 2 check-cifre + 18 cifre
+  { type: 'iban', pattern: /\bDK\d{2}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{2}\b/i },
+  // Kreditkort: 16 cifre i grupper af 4
+  { type: 'creditcard', pattern: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/ }
+]
+
+function detectPiiInText(text: string): string[] {
+  if (!text || typeof text !== 'string') return []
+  const detected = new Set<string>()
+  for (const { type, pattern } of PII_REGEX_PATTERNS) {
+    if (pattern.test(text)) detected.add(type)
+  }
+  return Array.from(detected)
+}
+
+const PII_DETECTION_SUFFIX = `
+
+VIGTIG TILFØJELSE — Tjek for personhenførbare data (PII):
+Tilføj følgende felter til din JSON-respons:
+- "piiDetected": boolean — true hvis transskriptionen indeholder personhenførbar information om en kunde, klient, kollega eller tredjepart der KAN identificere en specifik person
+- "piiTypes": array af detekterede typer fra:
+  · "name" — fuldt personnavn (fornavn+efternavn) eller på anden vis identificerende
+  · "address" — adresse eller del af adresse (vej, husnummer, by)
+  · "birthdate" — fødselsdato eller dato der antyder en specifik persons alder
+  · "health" — helbredsoplysninger, diagnoser, medicin, behandling
+  · "financial" — finansielle detaljer (kontonumre, gæld, indkomst-niveau, kreditværdighed)
+
+Regler for hvad der IKKE er PII:
+- Generiske roller som "kunden", "brugeren", "ham/hende" er ikke PII alene
+- Egne kollegers fornavne alene (fx "Anders skal ringe") er ikke PII — det er interne task-ejere
+- Firmanavne eller generelle stedreferencer (fx "Brønshøj", "Aalborg") er ikke PII
+- Beløb og priser uden personlig kontekst er ikke PII
+
+Hvis transskriptionen ikke indeholder PII: "piiDetected": false, "piiTypes": [].`
+
+function applyPiiDetection(
+  modelResponse: Record<string, any>,
+  textsToScan: string[]
+): Record<string, any> {
+  // Regex-detektion på input-tekst (transcription + evt. imageTranscriptions)
+  const regexPii = new Set<string>()
+  for (const text of textsToScan) {
+    detectPiiInText(text).forEach(t => regexPii.add(t))
+  }
+
+  // AI-detection fra model-respons (kan være undefined/null hvis model glemte)
+  const aiPii: string[] = Array.isArray(modelResponse.piiTypes)
+    ? modelResponse.piiTypes.filter((t: unknown) => typeof t === 'string')
+    : []
+
+  // Union af begge
+  const combined = Array.from(new Set([...aiPii, ...regexPii]))
+
+  // Overskriv altid med konsoliderede værdier — sikrer at felterne ALTID
+  // er til stede, også når model glemte dem.
+  modelResponse.piiDetected = combined.length > 0
+  modelResponse.piiTypes = combined
+
+  return modelResponse
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Retry-logik til OpenAI rate limits
 //
 // Ved 429 (rate limit) venter vi eksponentielt og prøver igen.
@@ -170,16 +256,99 @@ async function callWithRetry<T>(
 // ─────────────────────────────────────────────────────────────────────────────
 
 function analyzePrompt(transcription: string): string {
-  return `Du er en produktivitetsassistent. Analyser denne transskription og returner JSON med:
-1. En kort sigende titel (max 6 ord)
-2. Et kort resume (2-3 sætninger)
-3. En liste af konkrete opgaver/handlinger
-Returner KUN dette JSON format:
+  return `Du er en professionel assistent der hjælper med at strukturere talenoter. Du fungerer som projektleder, referent og produktejer på samme tid.
+
+Læs transskriptionen og afgør hvilken TYPE den tilhører:
+- "moede"      → møde, diskussion, referat, opfølgning med andre
+- "opgave"     → konkret task, reminder, to-do, ting der skal gøres
+- "beslutning" → en beslutning der er taget eller skal tages
+- "ide"        → idé, brainstorm, koncepttanke, "hvad hvis"-scenarie
+- "note"       → alt andet: observation, tanke, info, freeform
+
+Returner KUN JSON i det format der matcher typen — se nedenfor. Skriv på dansk. Udfyld kun felter der er nævnt i transskriptionen.
+
+════════════════════════════════
+TYPE: moede
+════════════════════════════════
 {
-    "title": "...",
-    "summary": "...",
-    "tasks": ["opgave 1", "opgave 2"]
+  "type": "moede",
+  "title": "Kort mødebeskrivelse (max 8 ord)",
+  "summary": "Hvad mødet handlede om og hvad der blev nået (2-3 sætninger)",
+  "deltagere": ["Navne nævnt i transskriptionen — [] hvis ingen nævnt"],
+  "beslutninger": ["Konkrete beslutninger taget i mødet"],
+  "tasks": [
+    { "handling": "Hvad skal gøres", "ejer": "Navn hvis nævnt — ellers null", "deadline": "Deadline hvis nævnt — ellers null" }
+  ],
+  "open_questions": ["Spørgsmål eller emner der ikke blev afklaret"],
+  "naeste_moede": "Tidspunkt for næste møde hvis nævnt — ellers null"
 }
+
+════════════════════════════════
+TYPE: opgave
+════════════════════════════════
+{
+  "type": "opgave",
+  "title": "Kort opgavebeskrivelse (max 8 ord)",
+  "summary": "Kort kontekst for opgaven hvis relevant — ellers null",
+  "tasks": [
+    { "handling": "Hvad skal gøres", "prioritet": "hast eller normal — brug 'hast' kun hvis det eksplicit nævnes", "deadline": "Deadline hvis nævnt — ellers null", "ejer": "Navn hvis nævnt — ellers null" }
+  ],
+  "open_questions": ["Åbne spørgsmål eller uafklarede afhængigheder — [] hvis ingen"]
+}
+
+════════════════════════════════
+TYPE: beslutning
+════════════════════════════════
+{
+  "type": "beslutning",
+  "title": "Kort beslutningsbeskrivelse (max 8 ord)",
+  "summary": "Kontekst og baggrund for beslutningen (1-2 sætninger)",
+  "beslutning": "Den konkrete beslutning der er taget",
+  "begrundelse": "Hvorfor denne beslutning — hvis nævnt, ellers null",
+  "alternativer_fravalgt": ["Andre muligheder der blev overvejet men fravalgt — [] hvis ingen nævnt"],
+  "konsekvenser": ["Hvad beslutningen betyder fremadrettet — [] hvis ikke nævnt"],
+  "tasks": ["Handlinger der følger af beslutningen"],
+  "open_questions": ["Åbne spørgsmål eller uafklarede afhængigheder — [] hvis ingen"]
+}
+
+════════════════════════════════
+TYPE: ide
+════════════════════════════════
+{
+  "type": "ide",
+  "title": "Kort idébeskrivelse (max 8 ord)",
+  "summary": "Idéen i et nøddeskal (1-2 sætninger)",
+  "ide_beskrivelse": "Uddybende beskrivelse af idéen som dikteret",
+  "fordele": ["Potentielle fordele nævnt — [] hvis ingen"],
+  "udfordringer": ["Potentielle udfordringer nævnt — [] hvis ingen"],
+  "tasks": ["Næste skridt for at undersøge eller realisere idéen"],
+  "open_questions": ["Åbne spørgsmål eller uafklarede afhængigheder — [] hvis ingen"]
+}
+
+════════════════════════════════
+TYPE: note (fallback)
+════════════════════════════════
+{
+  "type": "note",
+  "title": "Kort beskrivelse (max 8 ord)",
+  "summary": "Hvad notaten handler om (2-3 sætninger)",
+  "tasks": ["Konkrete handlinger hvis nævnt — [] hvis ingen"],
+  "open_questions": ["Åbne spørgsmål eller uafklarede afhængigheder — [] hvis ingen"]
+}
+
+Regler:
+- Vælg KUN én type — den der passer bedst
+- Inkludér ALTID title, summary, tasks og open_questions (selvom de er [])
+- Opfind aldrig information der ikke er nævnt i transskriptionen
+- Returner KUN valid JSON — ingen tekst udenfor JSON
+
+Hvad tæller som et åbent spørgsmål (open_questions):
+- Eksplicitte spørgsmål: "hvad koster det?", "hvem tager sig af X?"
+- Udtrykt usikkerhed: "jeg ved ikke om...", "det er uklart om..."
+- Uafklarede afhængigheder: "det afhænger af Y", "vi afventer svar fra Z"
+- Ting der skal undersøges: "vi skal finde ud af...", "mangler at tjekke..."
+Hvad tæller IKKE: ting der allerede er besvaret i samme transskription
+
 Transskription: ${transcription}`
 }
 
@@ -347,6 +516,11 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
       promptText = analyzePrompt(transcription)
     }
 
+    // PII-detektion gælder uanset niche-path. Appendes ALTID til den endelige
+    // prompt så GPT-4o-mini producerer piiDetected/piiTypes-felter sammen
+    // med niche-skemaet.
+    promptText += PII_DETECTION_SUFFIX
+
     const openai = getOpenAI()
     const completion = await callWithRetry(() =>
       openai.chat.completions.create({
@@ -357,6 +531,17 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
       })
     )
     const content = completion.choices[0].message.content ?? '{}'
+    let parsed: Record<string, any>
+    try {
+      parsed = JSON.parse(content)
+    } catch {
+      parsed = {}
+    }
+
+    // Hybrid PII: merge AI-detected types med regex-detected types.
+    // Regex fanger CPR/telefon/email/IBAN/kreditkort selv hvis model
+    // glemmer at flagge dem; AI fanger kontekstuelle ting regex ikke kan.
+    parsed = applyPiiDetection(parsed, [transcription])
 
     // Event-logging — fang nicheId så /admin/niche-stats kan aggregere.
     // Wrappet i try/catch så event-skrivefejl ikke vælter den legitime
@@ -371,6 +556,7 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
         nicheId: resolvedNicheId,
         timestamp: Date.now(),
         tokens: totalTokens,
+        piiDetected: parsed.piiDetected === true,
         // gpt-4o-mini approx cost: input $0.150/1M tokens, output $0.600/1M.
         // Vi har ikke input/output-split fra usage-objektet, så vi bruger
         // et blandet gennemsnit på $0.000000375/token. Justér når præcis
@@ -381,7 +567,7 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
       console.error('ai/analyze event-log fejl (response sendes alligevel):', logErr)
     }
 
-    res.json(JSON.parse(content))
+    res.json(parsed)
   } catch (err) {
     console.error('ai/analyze fejl:', err)
     res.status(500).json({ error: 'Analyse fejlede' })
@@ -458,6 +644,10 @@ router.post(
         promptText = buildPrompt(niche, transcription, true)
       }
 
+      // PII-detektion ALTID — appendes uanset om vi bruger niche- eller
+      // emergency-fallback-prompten.
+      promptText += PII_DETECTION_SUFFIX
+
       // Byg dynamisk content-array til GPT-4o med ét image_url-element per
       // billede. detail: 'low' holder cost nede (~85 tokens per image)
       // versus 'high' (~170-2000 tokens per image afhængigt af dimensioner).
@@ -490,6 +680,20 @@ router.post(
         })
       )
       const content = completion.choices[0].message.content ?? '{}'
+      let parsed: Record<string, any>
+      try {
+        parsed = JSON.parse(content)
+      } catch {
+        parsed = {}
+      }
+
+      // Hybrid PII: scan transcription + imageTranscription[]-entries med
+      // regex. GPT-4o kan udlæse tekst fra billeder, så CPR/telefonnumre
+      // synligt på fx en faktura skal også fanges.
+      const imageTexts: string[] = Array.isArray(parsed.imageTranscription)
+        ? parsed.imageTranscription.filter((t: unknown): t is string => typeof t === 'string')
+        : []
+      parsed = applyPiiDetection(parsed, [transcription, ...imageTexts])
 
       // Event-logging — fanger visionCall-events til /admin/cost og
       // /admin/niche-stats. Inkluderer både nicheId (til stats) og imageCount
@@ -506,13 +710,14 @@ router.post(
           timestamp: Date.now(),
           tokens: totalTokens,
           imageCount: files.length,
+          piiDetected: parsed.piiDetected === true,
           costUsd: totalTokens * 0.00000625
         })
       } catch (logErr) {
         console.error('ai/vision event-log fejl (response sendes alligevel):', logErr)
       }
 
-      res.json(JSON.parse(content))
+      res.json(parsed)
     } catch (err) {
       console.error('ai/vision fejl:', err)
       res.status(500).json({ error: 'Vision-analyse fejlede' })
