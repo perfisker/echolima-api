@@ -35,11 +35,16 @@ router.post('/sync', authLimiter, verifyToken, async (req: AuthRequest, res: Res
       })
       res.json({ created: true, tierId: 'tier_free' })
     } else {
-      // Backfill defaultNiche på eksisterende user-docs der blev oprettet
-      // inden niche-feature blev introduceret (Step 5, 19. maj 2026).
+      // Backfill + migrér defaultNiche-feltet på eksisterende user-docs:
+      //   - manglende felt        → sættes til 'generel' (intro Step 5, 19. maj)
+      //   - lagret som 'vvs'      → migreres til 'haandvaerker' (rename 20. maj)
+      // Brugere undgår dermed 403 niche_tier_required ved næste AI-kald.
       const updates: Record<string, any> = { lastSeen: Date.now() }
-      if (!snap.data()?.defaultNiche) {
+      const currentNiche = snap.data()?.defaultNiche
+      if (!currentNiche) {
         updates.defaultNiche = 'generel'
+      } else if (currentNiche === 'vvs') {
+        updates.defaultNiche = 'haandvaerker'
       }
       await userRef.update(updates)
       res.json({ created: false, tierId: snap.data()?.tierId ?? 'tier_free' })
@@ -97,16 +102,21 @@ router.patch('/me', verifyToken, async (req: AuthRequest, res: Response) => {
         })
         return
       }
+
+      // Legacy-alias: ældre klient-versioner sender stadig "vvs". Konvertér
+      // stille til "haandvaerker" inden validering (rename 20. maj 2026).
+      const resolvedNiche = defaultNiche === 'vvs' ? 'haandvaerker' : defaultNiche
+
       const db = getFirestore()
-      const nicheSnap = await db.collection('niches').doc(defaultNiche).get()
+      const nicheSnap = await db.collection('niches').doc(resolvedNiche).get()
       if (!nicheSnap.exists || nicheSnap.data()?.isActive !== true) {
         res.status(400).json({
           error: 'unknown_niche',
-          message: `Niche '${defaultNiche}' findes ikke eller er deaktiveret`
+          message: `Niche '${resolvedNiche}' findes ikke eller er deaktiveret`
         })
         return
       }
-      updates.defaultNiche = defaultNiche
+      updates.defaultNiche = resolvedNiche
     }
 
     await getFirestore().collection('users').doc(uid).update(updates)

@@ -55,6 +55,29 @@ export function clearNicheCache(nicheId?: string): void {
  * Cache-miss laver præcis ét Firestore-read. Efterfølgende kald inden for
  * 5 minutter rammer kun memory.
  */
+// ─────────────────────────────────────────────────────────────────────────────
+// Legacy niche-aliasing
+//
+// Når vi renamer en niche (fx vvs → haandvaerker 20. maj 2026), kan ældre
+// Android-versioner stadig sende det gamle niche-ID. I stedet for at returnere
+// 403 niche_tier_required eller silent falde tilbage til generel, mapper vi
+// stille fra det gamle ID til det nye. Klienten oplever ingen ændring; bag
+// kulisserne bruger vi den nye niche-prompt.
+//
+// /auth/sync laver tilsvarende lazy migration på user-docs. Begge dele
+// sammen sikrer at brugere på ældre app-versioner får fornuftig AI-output
+// og at nye AI-kald gradvist konvergerer til de nye niche-navne.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const LEGACY_NICHE_ALIASES: Record<string, string> = {
+  vvs: 'haandvaerker'   // Renamed 20. maj 2026
+}
+
+function resolveNicheId(nicheId: unknown): string | undefined {
+  if (typeof nicheId !== 'string') return undefined
+  return LEGACY_NICHE_ALIASES[nicheId] ?? nicheId
+}
+
 export async function getNiche(nicheId: string): Promise<NicheDoc | null> {
   const cached = nicheCache.get(nicheId)
   if (cached && Date.now() - cached.fetchedAt < NICHE_CACHE_TTL_MS) {
@@ -215,6 +238,68 @@ function applyPiiDetection(
   // er til stede, også når model glemte dem.
   modelResponse.piiDetected = combined.length > 0
   modelResponse.piiTypes = combined
+
+  return modelResponse
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Udvidet analyse — universal addendum på tværs af alle niches og typer
+//
+// ANALYSIS_SUFFIX appendes ALTID efter PII_DETECTION_SUFFIX i den endelige
+// prompt. Den beder modellen returnere tre konstruktive ekstra-felter UD OVER
+// niche-skemaet:
+//
+//   suggested_improvements  — konkrete forslag til hvad brugeren kunne gøre bedre
+//   gaps                    — information der manglede i optagelsen
+//   follow_up_questions     — spørgsmål brugeren bør stille for at lukke noten
+//
+// Dette gælder for ALLE niches (generel, haandvaerker, fremtidige) og ALLE
+// typer (moede, opgave, beslutning, ide, note, haandvaerker_visit). Felterne
+// må ikke overlappe med tasks eller open_questions — det er bevidst en
+// "AI-bonus" oven på det brugeren selv har talt.
+//
+// applyAnalysisDefaults() sikrer at de tre felter ALTID er til stede (også
+// tomme []) hvis modellen glemmer dem.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ANALYSIS_SUFFIX = `
+
+UDVIDET ANALYSE — Tilføj følgende konstruktive felter til JSON-responsen:
+
+- "suggested_improvements": array af KONKRETE forslag til hvad brugeren kunne gøre bedre eller anbefale kunden/teamet
+  · Møde-eksempel: ["Følg op med skriftlig opsummering inden 24 timer"]
+  · Håndværker-eksempel: ["Anbefal forebyggende termostat-skift på 2. sal", "Foreslå serviceaftale baseret på alder på installation"]
+  · Opgave-eksempel: ["Inkludér deadline når du delegerer", "Tilføj kontekst om hvorfor opgaven haster"]
+
+- "gaps": array af SPECIFIK information der manglede i optagelsen men burde have været med
+  · Møde-eksempel: ["Næste skridt blev ikke aftalt", "Beslutningstageren blev ikke identificeret"]
+  · Håndværker-eksempel: ["Vandtryk blev ikke målt", "Kundens telefonnummer blev ikke noteret"]
+  · Opgave-eksempel: ["Deadline blev ikke nævnt", "Det er uklart hvem der ejer opgaven"]
+
+- "follow_up_questions": array af KONSTRUKTIVE spørgsmål brugeren bør stille kunde/team/sig selv for at lukke noten
+  · Møde-eksempel: ["Hvad er kundens deadline for beslutning?", "Hvem skal kontakte leverandøren?"]
+  · Håndværker-eksempel: ["Skal vi planlægge eftersyn til foråret?", "Vil kunden have en samlet pris eller specificeret faktura?"]
+  · Opgave-eksempel: ["Er der eksisterende ressourcer at trække på?", "Hvad er konsekvensen ved forsinkelse?"]
+
+Regler:
+- Forslag/gaps/spørgsmål skal være KONKRETE og handlingsorienterede — undgå generiske platituder ("husk at være grundig" er FORKERT)
+- Felterne må IKKE gentage noget der allerede står i "tasks" eller "open_questions"
+- Maks 3-5 elementer per felt — kvalitet over kvantitet
+- Hvis intet relevant: returner tom array []
+- Returner ALTID alle tre felter (også tomme) så klient kan rendere konsistent
+
+Bemærk: disse tre felter er en AI-værdi-tilføjelse oven på det brugeren talte — ikke et sammendrag. Vær opfindsom inden for faget.`
+
+function applyAnalysisDefaults(modelResponse: Record<string, any>): Record<string, any> {
+  // Sikrer at felterne ALTID er til stede som arrays (selv hvis model glemte
+  // eller returnerede null/undefined). Type-safe filtering så vi ikke render
+  // ikke-strings i klient-UI.
+  const ensureStringArray = (val: unknown): string[] =>
+    Array.isArray(val) ? val.filter((s): s is string => typeof s === 'string') : []
+
+  modelResponse.suggested_improvements = ensureStringArray(modelResponse.suggested_improvements)
+  modelResponse.gaps = ensureStringArray(modelResponse.gaps)
+  modelResponse.follow_up_questions = ensureStringArray(modelResponse.follow_up_questions)
 
   return modelResponse
 }
@@ -482,13 +567,17 @@ router.post('/transcribe', verifyToken, upload.single('file'), async (req: AuthR
 // aiSummary — se hybrid-arbejdsdeling i routes/usage.ts.
 router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { transcription, nicheId } = req.body
+    const { transcription, nicheId: rawNicheId } = req.body
     if (!transcription || typeof transcription !== 'string') {
       res.status(400).json({ error: 'Mangler transskription i body' })
       return
     }
 
     const uid = req.user!.uid
+
+    // Legacy-alias-mapping: vvs → haandvaerker (20. maj 2026 rename).
+    // Sker stille; klienten ved ikke at vi har skiftet niche-ID under huden.
+    const nicheId = resolveNicheId(rawNicheId)
 
     // Bestem effektiv prompt + niche-id til event-logging.
     let promptText: string
@@ -516,10 +605,12 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
       promptText = analyzePrompt(transcription)
     }
 
-    // PII-detektion gælder uanset niche-path. Appendes ALTID til den endelige
-    // prompt så GPT-4o-mini producerer piiDetected/piiTypes-felter sammen
-    // med niche-skemaet.
+    // PII-detektion + udvidet analyse gælder uanset niche-path. Appendes
+    // ALTID til den endelige prompt så GPT-4o-mini producerer piiDetected/
+    // piiTypes/suggested_improvements/gaps/follow_up_questions sammen med
+    // det niche-specifikke skema.
     promptText += PII_DETECTION_SUFFIX
+    promptText += ANALYSIS_SUFFIX
 
     const openai = getOpenAI()
     const completion = await callWithRetry(() =>
@@ -542,6 +633,10 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
     // Regex fanger CPR/telefon/email/IBAN/kreditkort selv hvis model
     // glemmer at flagge dem; AI fanger kontekstuelle ting regex ikke kan.
     parsed = applyPiiDetection(parsed, [transcription])
+
+    // Sikrer at suggested_improvements / gaps / follow_up_questions ALTID
+    // er til stede som arrays (også tomme) for konsistent klient-rendering.
+    parsed = applyAnalysisDefaults(parsed)
 
     // Event-logging — fang nicheId så /admin/niche-stats kan aggregere.
     // Wrappet i try/catch så event-skrivefejl ikke vælter den legitime
@@ -607,8 +702,11 @@ router.post(
       }
 
       const transcription = (req.body.transcription as string) ?? ''
-      const nicheId = req.body.nicheId as string | undefined
+      const rawNicheId = req.body.nicheId as string | undefined
       const uid = req.user!.uid
+
+      // Legacy-alias-mapping: vvs → haandvaerker (20. maj 2026 rename).
+      const nicheId = resolveNicheId(rawNicheId)
 
       // Niche-resolution: default til 'generel' hvis ikke specificeret.
       // Modsat /ai/analyze (hvor generel = legacy analyzePrompt) bruger /ai/vision
@@ -644,9 +742,10 @@ router.post(
         promptText = buildPrompt(niche, transcription, true)
       }
 
-      // PII-detektion ALTID — appendes uanset om vi bruger niche- eller
-      // emergency-fallback-prompten.
+      // PII-detektion + udvidet analyse ALTID — appendes uanset om vi
+      // bruger niche- eller emergency-fallback-prompten.
       promptText += PII_DETECTION_SUFFIX
+      promptText += ANALYSIS_SUFFIX
 
       // Byg dynamisk content-array til GPT-4o med ét image_url-element per
       // billede. detail: 'low' holder cost nede (~85 tokens per image)
@@ -694,6 +793,10 @@ router.post(
         ? parsed.imageTranscription.filter((t: unknown): t is string => typeof t === 'string')
         : []
       parsed = applyPiiDetection(parsed, [transcription, ...imageTexts])
+
+      // Sikrer at suggested_improvements / gaps / follow_up_questions ALTID
+      // er til stede som arrays (også tomme) for konsistent klient-rendering.
+      parsed = applyAnalysisDefaults(parsed)
 
       // Event-logging — fanger visionCall-events til /admin/cost og
       // /admin/niche-stats. Inkluderer både nicheId (til stats) og imageCount
