@@ -53,8 +53,9 @@ Strukturér notatet i følgende JSON-format — udfyld KUN felter der er nævnt 
   "type": "haandvaerker_visit",
   "title": "Kort beskrivelse af besøget (max 8 ord, inkludér gerne kundenavn/adresse)",
   "kunde": "Kundens navn og/eller adresse hvis nævnt, ellers null",
+  "transporttid_timer": 0.5,
   "udfoert_arbejde": [
-    { "beskrivelse": "Hvad blev lavet (fag-specifik formulering)", "tid_min": null }
+    { "beskrivelse": "Hvad blev lavet (fag-specifik formulering)", "tid_timer": null }
   ],
   "materialer_brugt": [
     { "vare": "Varebetegnelse", "antal": null, "enhed": "stk/meter/liter/m²/kg/etc" }
@@ -62,7 +63,7 @@ Strukturér notatet i følgende JSON-format — udfyld KUN felter der er nævnt 
   "observationer": ["Liste af ting set men ikke udbedret"],
   "bestillinger": ["Ting der skal købes/bestilles"],
   "naeste_besoeg": "Hvad skal laves ved næste besøg, ellers null",
-  "faktureringsgrundlag": "tid + arbejde + materialer (fag-specifik formulering)",
+  "faktureringsgrundlag": "tid + arbejde + materialer (fag-specifik formulering, ALTID i timer)",
   "tasks": ["Andre handlinger der ikke passer i ovenstående kategorier"]
 }
 
@@ -72,15 +73,44 @@ Regler:
 - "observationer" = ting der blev SET men IKKE udbedret i dag. Tjek: hvis noget allerede optræder i "udfoert_arbejde", må det IKKE gentages i "observationer". Kun nye fund der kræver fremtidig handling.
 - "bestillinger" = varer/materialer der mangler og skal købes
 - "faktureringsgrundlag" skal ALTID udfyldes med tid (hvis nævnt) + arbejde + materialer
-- Hvis transport nævnes som "X tid hver vej", beregn den samlede transporttid som tur + retur (dvs. × 2) og skriv begge dele: fx "2 timer transport (1 time hver vej)"
+
+TIDSANGIVELSER — VIGTIGT:
+- ALLE tidsfelter er i TIMER som decimaltal (Double), ALDRIG i minutter.
+- Tænk som en håndværker tænker faktureringsenheder — afrund til kvarter:
+  · 15 min = 0.25 timer
+  · 30 min = 0.5 timer
+  · 45 min = 0.75 timer
+  · 1 time = 1.0 timer
+  · 1 time 30 min = 1.5 timer
+  · 2 timer 15 min = 2.25 timer
+- "tid_timer" i hvert udfoert_arbejde-element = faktisk arbejdstid på den opgave (Double, timer).
+- Hvis tid ikke nævnes for en opgave: sæt "tid_timer": null.
+
+TRANSPORTTID — top-level felt "transporttid_timer" (Double, timer):
+- Registreres når talen nævner transport, kørsel, vej til/fra kunde, tankning undervejs eller lignende.
+- Hvis transport nævnes som "X tid hver vej", beregn samlet tid som tur + retur (× 2), og afrund derefter til nærmeste kvarter (0.25 trin).
+  Eksempel: "20 minutter hver vej" → 40 min total → afrundet til "transporttid_timer": 0.75
+  Eksempel: "1 time hver vej" → 2 timer total → "transporttid_timer": 2.0
+  Eksempel: "15 minutter hver vej" → 30 min total → "transporttid_timer": 0.5
+- Hvis transport IKKE nævnes i transskriptionen: UDELAD feltet HELT fra JSON (skriv ikke null, skriv ikke 0).
+
+GENERELT:
 - Inkludér KUN hvad der eksplicit er nævnt i transskriptionen. Opfind aldrig tid, materialer eller andet der ikke fremgår direkte.
 - Returner KUN valid JSON — ingen forklaring udenfor JSON
 
-Eksempler på fag-specifik formulering:
-- VVS: udfoert_arbejde "Skiftet pakning 22mm i køkkenvask" · materialer "2 stk. pakning 22mm" · faktureringsgrundlag "20 min: Pakning skiftet i køkkenvask. Materialer: 2 stk. pakning 22mm"
-- Elektriker: udfoert_arbejde "Skiftet HPFI-relæ i hovedtavle" · materialer "1 stk. HPFI 30mA 4-pol" · faktureringsgrundlag "45 min: HPFI-relæ skiftet. Materialer: 1 stk. HPFI 30mA 4-pol"
-- Murer: udfoert_arbejde "Repareret 3m² puds på sydfacade" · materialer "50 kg mørtel, 0.5 m³ sand" · faktureringsgrundlag "4 timer: Pudsreparation 3m². Materialer: 50kg mørtel + 0.5m³ sand"
-- Tømrer: udfoert_arbejde "Skiftet 4 brædder på terrasse" · materialer "4 stk. terrassebræt 28x120mm" · faktureringsgrundlag "2 timer: Terrasse-brædder skiftet. Materialer: 4 stk. terrassebræt 28x120mm"
+Eksempler på fag-specifik formulering (bemærk tid_timer + faktureringsgrundlag i timer):
+- VVS: udfoert_arbejde { "beskrivelse": "Skiftet pakning 22mm i køkkenvask", "tid_timer": 0.25 } · materialer "2 stk. pakning 22mm" · faktureringsgrundlag "0.25 timer: Pakning skiftet i køkkenvask. Materialer: 2 stk. pakning 22mm"
+- Elektriker: udfoert_arbejde { "beskrivelse": "Skiftet HPFI-relæ i hovedtavle", "tid_timer": 0.75 } · materialer "1 stk. HPFI 30mA 4-pol" · faktureringsgrundlag "0.75 timer: HPFI-relæ skiftet. Materialer: 1 stk. HPFI 30mA 4-pol"
+- Murer: udfoert_arbejde { "beskrivelse": "Repareret 3m² puds på sydfacade", "tid_timer": 4.0 } · materialer "50 kg mørtel, 0.5 m³ sand" · faktureringsgrundlag "4.0 timer: Pudsreparation 3m². Materialer: 50kg mørtel + 0.5m³ sand"
+- Tømrer: udfoert_arbejde { "beskrivelse": "Skiftet 4 brædder på terrasse", "tid_timer": 2.0 } · materialer "4 stk. terrassebræt 28x120mm" · faktureringsgrundlag "2.0 timer: Terrasse-brædder skiftet. Materialer: 4 stk. terrassebræt 28x120mm"
+
+Eksempel med transport — transskription: "Jeg kørte ud til Hansen på Birkevej, 15 minutter hver vej. Skiftede en termostat på radiatoren, tog en halv time, brugte en ny termostat."
+Output (uddrag):
+  "transporttid_timer": 0.5,
+  "udfoert_arbejde": [{ "beskrivelse": "Skiftet termostat på radiator", "tid_timer": 0.5 }],
+  "materialer_brugt": [{ "vare": "Termostat", "antal": 1, "enhed": "stk" }]
+
+Eksempel UDEN transport — hvis ingen kørsel/transport nævnes: udelad "transporttid_timer" helt fra JSON (ikke null, ikke 0).
 
 Eksempel — FORKERT: udfoert_arbejde indeholder "Skiftet pakning", OG observationer indeholder "Læk under håndvask" — det er det samme problem, bare gentaget!
 Eksempel — RIGTIGT: udfoert_arbejde indeholder "Skiftet pakning", observationer er [] — læk er løst, ikke en ny observation.
@@ -158,7 +188,7 @@ const niches = [
     appIds: ['echolima'],
     isActive: true,
     order: 2,
-    version: '1.0.0'
+    version: '1.1.0'  // 21. maj 2026: tid_min → tid_timer + transporttid_timer top-level felt
   },
   {
     id: 'vvs',
