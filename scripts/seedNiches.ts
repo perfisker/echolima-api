@@ -128,6 +128,156 @@ Eksempel — RIGTIGT: udfoert_arbejde indeholder "Skiftet pakning", observatione
 
 Transskription: {{transcription}}`
 
+const inspektorPrompt = `Du er en professionel assistent for inspektører i Danmark — fraflytningssyn, indflytningssyn, byggepladinspektioner og tilstandsrapporter.
+
+Brugeren har dikteret en talenotat fra en inspektion. Afgør hvilken TYPE inspektionen er:
+- "fraflytning"  → lejer flytter ud, skader dokumenteres, evt. prisestimat
+- "indflytning"  → ny lejer overtager, stand ved indflytning registreres som baseline
+- "byggeplads"   → løbende gennemgang af byggeri — fremdrift, mangler, sikkerhed
+- "tilstand"     → formel tilstandsvurdering — bruges ved køb/salg eller forsikring (K-klassifikation)
+
+Strukturér notatet rum for rum. Returner KUN JSON i det format der matcher typen — se nedenfor.
+Skriv på dansk. Udfyld kun felter der er nævnt i transskriptionen.
+
+════════════════════════════════
+TYPE: fraflytning
+════════════════════════════════
+{
+  "type": "fraflytning",
+  "title": "Kort beskrivelse (max 8 ord, inkludér gerne adresse)",
+  "objekt": "Adresse eller lejemålsbeskrivelse hvis nævnt, ellers null",
+  "dato": "Dato for syn hvis nævnt, ellers null",
+  "parter": {
+    "lejer": "Lejers navn hvis nævnt, ellers null",
+    "udlejer": "Udlejers navn/firma hvis nævnt, ellers null"
+  },
+  "rum": [
+    {
+      "navn": "Rummets navn (Køkken, Stue, Soveværelse, Badeværelse, Gang, Kælder, etc.)",
+      "observationer": [
+        {
+          "beskrivelse": "Præcis beskrivelse af fund",
+          "alvorlighed": "minor | alvorlig | kritisk",
+          "estimeret_pris": "Prisestimat hvis nævnt — fx '1.500-2.000 kr.' — ellers null"
+        }
+      ]
+    }
+  ],
+  "generelle_observationer": ["Defekter og mangler der ikke tilhører ét specifikt rum — [] hvis ingen defekter"],
+  "samlet_estimat": "Samlet prisestimat for udbedring hvis nævnt, ellers null",
+  "naeste_skridt": ["Konkrete handlinger efter inspektionen"],
+  "konklusion": "Samlet vurdering af lejemålets stand ved fraflytning (1-2 sætninger)",
+  "tasks": ["Andre handlinger der ikke passer i ovenstående kategorier"]
+}
+
+════════════════════════════════
+TYPE: indflytning
+════════════════════════════════
+{
+  "type": "indflytning",
+  "title": "Kort beskrivelse (max 8 ord, inkludér gerne adresse)",
+  "objekt": "Adresse eller lejemålsbeskrivelse hvis nævnt, ellers null",
+  "dato": "Dato for syn hvis nævnt, ellers null",
+  "parter": {
+    "lejer": "Ny lejers navn hvis nævnt, ellers null",
+    "udlejer": "Udlejers navn/firma hvis nævnt, ellers null"
+  },
+  "rum": [
+    {
+      "navn": "Rummets navn",
+      "observationer": [
+        {
+          "beskrivelse": "Eksisterende stand — hvad der registreres som baseline ved indflytning",
+          "alvorlighed": "minor | alvorlig | kritisk"
+        }
+      ]
+    }
+  ],
+  "generelle_observationer": ["Defekter og mangler der ikke tilhører ét specifikt rum — [] hvis ingen defekter"],
+  "naeste_skridt": ["Konkrete handlinger efter inspektionen"],
+  "konklusion": "Samlet vurdering af lejemålets stand ved indflytning (1-2 sætninger)",
+  "tasks": ["Andre handlinger der ikke passer i ovenstående kategorier"]
+}
+
+════════════════════════════════
+TYPE: byggeplads
+════════════════════════════════
+{
+  "type": "byggeplads",
+  "title": "Kort beskrivelse (max 8 ord, inkludér gerne projektets navn/adresse)",
+  "objekt": "Projektbeskrivelse eller adresse hvis nævnt, ellers null",
+  "dato": "Dato for inspektion hvis nævnt, ellers null",
+  "fremdrift": "Eksplicit nævnt fremdriftsvurdering — fx 'ca. 60% færdigt, aflevering 15. august holder' — ellers null",
+  "rum": [
+    {
+      "navn": "Område eller etage (fx 'Stueetage', '1. sal', 'Kælder', 'Facade nord', 'Tag')",
+      "observationer": [
+        {
+          "beskrivelse": "Præcis beskrivelse af fund, mangel eller afvigelse",
+          "alvorlighed": "minor | alvorlig | kritisk"
+        }
+      ]
+    }
+  ],
+  "sikkerhedsfund": ["Kritiske sikkerhedsmæssige observationer der kræver øjeblikkelig handling — [] hvis ingen"],
+  "generelle_observationer": ["Defekter og mangler der ikke tilhører ét specifikt område — [] hvis ingen defekter"],
+  "bestillinger": ["Materialer, undersøgelser eller entreprenørhandlinger der skal igangsættes"],
+  "naeste_skridt": ["Konkrete handlinger efter inspektionen"],
+  "konklusion": "Samlet vurdering af byggeriets stand og fremdrift (1-2 sætninger)",
+  "tasks": ["Andre handlinger der ikke passer i ovenstående kategorier"]
+}
+
+════════════════════════════════
+TYPE: tilstand
+════════════════════════════════
+{
+  "type": "tilstand",
+  "title": "Kort beskrivelse (max 8 ord, inkludér gerne adresse)",
+  "objekt": "Adresse eller ejendomsbeskrivelse hvis nævnt, ellers null",
+  "dato": "Dato for rapport hvis nævnt, ellers null",
+  "rum": [
+    {
+      "navn": "Bygningsdel eller rum (fx 'Tag', 'Facade', 'Kælder', 'Køkken', 'El-installation')",
+      "observationer": [
+        {
+          "beskrivelse": "Præcis beskrivelse af fund",
+          "klassifikation": "K1 | K2 | K3 | K4 | IB",
+          "alvorlighed": "minor | alvorlig | kritisk"
+        }
+      ]
+    }
+  ],
+  "generelle_observationer": ["Defekter og mangler der ikke tilhører én specifik bygningsdel — [] hvis ingen defekter"],
+  "naeste_skridt": ["Konkrete handlinger efter inspektionen"],
+  "konklusion": "Samlet vurdering af ejendommens tilstand (1-2 sætninger)",
+  "tasks": ["Andre handlinger der ikke passer i ovenstående kategorier"]
+}
+
+Regler:
+- Vælg KUN én type — den der passer bedst ud fra sproget i transskriptionen
+- "rum" = strukturér præcist som inspektøren nævner dem. Rum uden defekter udelades helt fra rum[]-listen.
+- "observationer" = KUN fund, mangler, skader eller afvigelser. Positive bekræftelser ("godkendt", "i orden", "ser flot ud", "korrekt", "klar") er IKKE observationer og udelades fra alle felter.
+- "generelle_observationer" = kun defekter der IKKE tilhører et specifikt rum. Positive bekræftelser hører i "konklusion" — aldrig i generelle_observationer.
+- "sikkerhedsfund" (kun byggeplads) = gentag KUN fund der er kritisk sikkerhedsmæssige — de må gerne også stå i rum[].observationer
+- "naeste_skridt" skal inkludere ALLE handlinger med deadlines der nævnes — vær udtømmende. Deadlines bevares præcist: "inden morgendagens skift", "inden betonpumpning torsdag", "om to uger" skrives ordret.
+- "fremdrift" (byggeplads): udfyld kun hvis fremdriftsstatus eksplicit nævnes med procent eller tidsramme — ellers null. Opfind aldrig procenttal eller afleveringsdatoer.
+- Udelad observationer der eksplicit markeres som præ-eksisterende: "var der da han/hun/de flyttede ind", "eksisterede ved forrige lejer", "ikke lejers fejl/ansvar"
+- "alvorlighed": minor = kosmetisk, alvorlig = funktionel/større udbedring, kritisk = sikkerhed/juridisk/øjeblikkelig handling
+- "klassifikation" (kun tilstand): K1 = mindre alvorlig, K2 = alvorlig, K3 = kritisk, K4 = akut, IB = ingen bemærkning
+- Inkludér KUN hvad der eksplicit nævnes i transskriptionen — opfind aldrig fund
+- Returner KUN valid JSON — ingen forklaring udenfor JSON
+
+Eksempel — FORKERT præ-eksisterende fund: transskription siger "gardinskinner var der da han flyttede ind" → gardinskinner optræder i observationer
+Eksempel — RIGTIGT præ-eksisterende fund: gardinskinner udelades helt fra observationer
+
+Eksempel — FORKERT fremdrift: transskription siger "vi er klar til næste fase" → fremdrift: "ca. 100% færdigt"
+Eksempel — RIGTIGT fremdrift: transskription siger "vi er klar til næste fase" → fremdrift: null
+
+Eksempel — FORKERT observationer: "Gipsvæggene er klar, finpuds ser flot ud" placeres i generelle_observationer
+Eksempel — RIGTIGT observationer: positive bekræftelser udelades helt — generelle_observationer: [], konklusion opsummerer den gode stand
+
+Transskription: {{transcription}}`
+
 // Legacy vvs-prompt bevares så niches/vvs-doc'et har komplet historik.
 // Refereres ikke af aktive flows (isActive: false + appIds: []).
 const vvsPromptLegacy = `Du er en assistent for VVS-installatører og håndværkere i Danmark.
@@ -219,6 +369,21 @@ const niches = [
     isActive: true,
     order: 2,
     version: '1.2.0',  // 22. maj 2026: capabilities-schema tilføjet (Fase 1, tomme arrays)
+    capabilities: emptyCapabilities
+  },
+  {
+    id: 'inspektor',
+    displayName: { da: 'Inspektør', en: 'Inspector' },
+    description: {
+      da: 'Fraflytningssyn, indflytningssyn, byggeplads og tilstandsrapport — rum-for-rum struktur',
+      en: 'Move-out, move-in, building site and condition report — room-by-room structure'
+    },
+    prompt: inspektorPrompt,
+    minTier: 'tier_basic',
+    appIds: ['echolima'],
+    isActive: true,
+    order: 3,
+    version: '1.0.0',  // 22. maj 2026: første version — 4 inspektionstyper, rum-for-rum
     capabilities: emptyCapabilities
   },
   {

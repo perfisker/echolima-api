@@ -71,6 +71,38 @@ const samples: Sample[] = [
     niche: 'vvs',
     label: 'Ny bruseinstallation + fund af skjult skade',
     transcription: `Færdig hos Nielsens på Strandvejen 88. Installeret ny brusearmatur i badeværelset på 1. sal, tog halvanden time. Brugte ny bruserarmatur fra lageret — Grohe Euphoria, og silicone til tætning. Men da jeg åbnede væggen bag bruseren fandt jeg skimmelsvamp bag fliserne, ret massivt. Det er ikke noget jeg kan fikse indenfor dette job. Det skal kunden vide om med det samme — ring til dem inden du kører hjem. De skal have fat i en skimmelekspert. Husk at tage foto af skaden inden du lukker væggen igen.`
+  },
+
+  // ── Inspektør-samples ─────────────────────────────────────────────────────
+  {
+    id: 1,
+    niche: 'inspektor',
+    label: 'Fraflytning — 3 rum, prisestimater, præ-eksisterende fund',
+    transcription: `Okay fraflytningssyn på Birkevej 12, 2. sal. Lejer hedder Thomas Eriksen. Starter i entréen — der er et stort hul i væggen ved lyskontakten, alvorligt, skal sparkles og males, estimerer 800 kroner. I stuen er der ridser i parketgulvet ved vinduespartiet, minor. Gardinskinner mangler, det var der da han flyttede ind, det er ikke hans fejl. I badeværelset er der fugt bag badekarret, det er kritisk — der skal fliser af, fugt udbedres og ny fuge. Estimat 4.000 til 6.000 kroner. Samlet estimat 5.000 til 7.000 kroner. Næste skridt er at sende rapporten til udlejer inden fredag.`
+  },
+  {
+    id: 2,
+    niche: 'inspektor',
+    label: 'Indflytning — baseline registrering, 2 rum',
+    transcription: `Indflytningssyn Rosenvænget 4, stuen. Ny lejer er Mette Andersen der overtager 1. juni. I køkkenet er fronterne lidt slidte, det er normalt slid, minor. Underskabet under vasken er misfarvet, alvorligt men var der ved forrige lejer — registreres som baseline. I stuen er malingen gul ved vinduerne, minor, solskader. Generelt er lejligheden i rimelig stand til sin alder fra 1973.`
+  },
+  {
+    id: 3,
+    niche: 'inspektor',
+    label: 'Byggeplads — fremdrift, sikkerhedsfund, 3 områder',
+    transcription: `Byggepladindspektion Strandvejen 88, råhus etape 2. Fremdriften er ca. 70 procent færdig, vi er lidt bagud men afleveringen 15. august holder stadig. På stueetagen er betonarbejdet i orden, men der mangler forskallingen ved søjle 3 — alvorligt, entreprenøren skal på det inden betonpumpning torsdag. På 1. sal er der ingen gelænder ved trappeåbningen mod øst — det er kritisk sikkerhedsfund, stilladser skal sættes op inden morgendagens skift. Taget er generelt okay, men der er en vandpøl i nordøsthjørnet der antyder en fald-fejl — alvorligt. Næste inspektion om to uger.`
+  },
+  {
+    id: 4,
+    niche: 'inspektor',
+    label: 'Tilstandsrapport — K-klassifikation, parcelhus 1968',
+    transcription: `Tilstandsrapport Elmegade 7, parcelhus fra 1968. Taget har revnede tagsten i sydvendt flade, K2. Tagrender er rustne og hænger skævt ved gavlen, K2. I kælderen er der tegn på opstigende fugt ved fundamentsvæg mod nord, K3. El-installationen er fra original byggeår og bør gennemgås af autoriseret el-installatør, K2. Vinduer i stuen er tærede og utætte, K1. Generelt fremstår ejendommen som en typisk 1960er-villa der trænger til løbende vedligehold men ikke akutte indgreb.`
+  },
+  {
+    id: 5,
+    niche: 'inspektor',
+    label: 'Byggeplads uden fund — ren gennemgang',
+    transcription: `Hurtig runde på Havnevej 3, etage 2. Gipsvæggene er klar, finpuds ser flot ud. Maling på gangen er godkendt. El-føringsrør er trukket korrekt. Ingen fund i dag, alt ser fint ud. Vi er klar til gulvlægning næste uge.`
   }
 ]
 
@@ -132,25 +164,189 @@ Regler:
 Transskription: ${transcription}`
 }
 
+function inspektorPromptV1(transcription: string): string {
+  return `Du er en professionel assistent for inspektører i Danmark — fraflytningssyn, indflytningssyn, byggepladinspektioner og tilstandsrapporter.
+
+Brugeren har dikteret en talenotat fra en inspektion. Afgør hvilken TYPE inspektionen er:
+- "fraflytning"  → lejer flytter ud, skader dokumenteres, evt. prisestimat
+- "indflytning"  → ny lejer overtager, stand ved indflytning registreres som baseline
+- "byggeplads"   → løbende gennemgang af byggeri — fremdrift, mangler, sikkerhed
+- "tilstand"     → formel tilstandsvurdering — bruges ved køb/salg eller forsikring (K-klassifikation)
+
+Strukturér notatet rum for rum. Returner KUN JSON i det format der matcher typen — se nedenfor.
+Skriv på dansk. Udfyld kun felter der er nævnt i transskriptionen.
+
+════════════════════════════════
+TYPE: fraflytning
+════════════════════════════════
+{
+  "type": "fraflytning",
+  "title": "Kort beskrivelse (max 8 ord, inkludér gerne adresse)",
+  "objekt": "Adresse eller lejemålsbeskrivelse hvis nævnt, ellers null",
+  "dato": "Dato for syn hvis nævnt, ellers null",
+  "parter": {
+    "lejer": "Lejers navn hvis nævnt, ellers null",
+    "udlejer": "Udlejers navn/firma hvis nævnt, ellers null"
+  },
+  "rum": [
+    {
+      "navn": "Rummets navn (Køkken, Stue, Soveværelse, Badeværelse, Gang, Kælder, etc.)",
+      "observationer": [
+        {
+          "beskrivelse": "Præcis beskrivelse af fund",
+          "alvorlighed": "minor | alvorlig | kritisk",
+          "estimeret_pris": "Prisestimat hvis nævnt — fx '1.500-2.000 kr.' — ellers null"
+        }
+      ]
+    }
+  ],
+  "generelle_observationer": ["Defekter og mangler der ikke tilhører ét specifikt rum — [] hvis ingen defekter"],
+  "samlet_estimat": "Samlet prisestimat for udbedring hvis nævnt, ellers null",
+  "naeste_skridt": ["Konkrete handlinger efter inspektionen"],
+  "konklusion": "Samlet vurdering af lejemålets stand ved fraflytning (1-2 sætninger)",
+  "tasks": ["Andre handlinger der ikke passer i ovenstående kategorier"]
+}
+
+════════════════════════════════
+TYPE: indflytning
+════════════════════════════════
+{
+  "type": "indflytning",
+  "title": "Kort beskrivelse (max 8 ord, inkludér gerne adresse)",
+  "objekt": "Adresse eller lejemålsbeskrivelse hvis nævnt, ellers null",
+  "dato": "Dato for syn hvis nævnt, ellers null",
+  "parter": {
+    "lejer": "Ny lejers navn hvis nævnt, ellers null",
+    "udlejer": "Udlejers navn/firma hvis nævnt, ellers null"
+  },
+  "rum": [
+    {
+      "navn": "Rummets navn",
+      "observationer": [
+        {
+          "beskrivelse": "Eksisterende stand — hvad der registreres som baseline ved indflytning",
+          "alvorlighed": "minor | alvorlig | kritisk"
+        }
+      ]
+    }
+  ],
+  "generelle_observationer": ["Defekter og mangler der ikke tilhører ét specifikt rum — [] hvis ingen defekter"],
+  "naeste_skridt": ["Konkrete handlinger efter inspektionen"],
+  "konklusion": "Samlet vurdering af lejemålets stand ved indflytning (1-2 sætninger)",
+  "tasks": ["Andre handlinger der ikke passer i ovenstående kategorier"]
+}
+
+════════════════════════════════
+TYPE: byggeplads
+════════════════════════════════
+{
+  "type": "byggeplads",
+  "title": "Kort beskrivelse (max 8 ord, inkludér gerne projektets navn/adresse)",
+  "objekt": "Projektbeskrivelse eller adresse hvis nævnt, ellers null",
+  "dato": "Dato for inspektion hvis nævnt, ellers null",
+  "fremdrift": "Eksplicit nævnt fremdriftsvurdering — fx 'ca. 60% færdigt, aflevering 15. august holder' — ellers null",
+  "rum": [
+    {
+      "navn": "Område eller etage (fx 'Stueetage', '1. sal', 'Kælder', 'Facade nord', 'Tag')",
+      "observationer": [
+        {
+          "beskrivelse": "Præcis beskrivelse af fund, mangel eller afvigelse",
+          "alvorlighed": "minor | alvorlig | kritisk"
+        }
+      ]
+    }
+  ],
+  "sikkerhedsfund": ["Kritiske sikkerhedsmæssige observationer der kræver øjeblikkelig handling — [] hvis ingen"],
+  "generelle_observationer": ["Defekter og mangler der ikke tilhører ét specifikt område — [] hvis ingen defekter"],
+  "bestillinger": ["Materialer, undersøgelser eller entreprenørhandlinger der skal igangsættes"],
+  "naeste_skridt": ["Konkrete handlinger efter inspektionen"],
+  "konklusion": "Samlet vurdering af byggeriets stand og fremdrift (1-2 sætninger)",
+  "tasks": ["Andre handlinger der ikke passer i ovenstående kategorier"]
+}
+
+════════════════════════════════
+TYPE: tilstand
+════════════════════════════════
+{
+  "type": "tilstand",
+  "title": "Kort beskrivelse (max 8 ord, inkludér gerne adresse)",
+  "objekt": "Adresse eller ejendomsbeskrivelse hvis nævnt, ellers null",
+  "dato": "Dato for rapport hvis nævnt, ellers null",
+  "rum": [
+    {
+      "navn": "Bygningsdel eller rum (fx 'Tag', 'Facade', 'Kælder', 'Køkken', 'El-installation')",
+      "observationer": [
+        {
+          "beskrivelse": "Præcis beskrivelse af fund",
+          "klassifikation": "K1 | K2 | K3 | K4 | IB",
+          "alvorlighed": "minor | alvorlig | kritisk"
+        }
+      ]
+    }
+  ],
+  "generelle_observationer": ["Defekter og mangler der ikke tilhører én specifik bygningsdel — [] hvis ingen defekter"],
+  "naeste_skridt": ["Konkrete handlinger efter inspektionen"],
+  "konklusion": "Samlet vurdering af ejendommens tilstand (1-2 sætninger)",
+  "tasks": ["Andre handlinger der ikke passer i ovenstående kategorier"]
+}
+
+Regler:
+- Vælg KUN én type — den der passer bedst ud fra sproget i transskriptionen
+- "rum" = strukturér præcist som inspektøren nævner dem. Rum uden defekter udelades helt fra rum[]-listen.
+- "observationer" = KUN fund, mangler, skader eller afvigelser. Positive bekræftelser ("godkendt", "i orden", "ser flot ud", "korrekt", "klar") er IKKE observationer og udelades fra alle felter.
+- "generelle_observationer" = kun defekter der IKKE tilhører et specifikt rum. Positive bekræftelser hører i "konklusion" — aldrig i generelle_observationer.
+- "sikkerhedsfund" (kun byggeplads) = gentag KUN fund der er kritisk sikkerhedsmæssige — de må gerne også stå i rum[].observationer
+- "naeste_skridt" skal inkludere ALLE handlinger med deadlines der nævnes — vær udtømmende. Deadlines bevares præcist.
+- "fremdrift" (byggeplads): udfyld kun hvis fremdriftsstatus eksplicit nævnes med procent eller tidsramme — ellers null.
+- Udelad observationer der eksplicit markeres som præ-eksisterende: "var der da han/hun/de flyttede ind", "eksisterede ved forrige lejer", "ikke lejers fejl/ansvar"
+- "alvorlighed": minor = kosmetisk, alvorlig = funktionel/større udbedring, kritisk = sikkerhed/juridisk/øjeblikkelig handling
+- "klassifikation" (kun tilstand): K1 = mindre alvorlig, K2 = alvorlig, K3 = kritisk, K4 = akut, IB = ingen bemærkning
+- Inkludér KUN hvad der eksplicit nævnes i transskriptionen — opfind aldrig fund
+- Returner KUN valid JSON — ingen forklaring udenfor JSON
+
+Eksempel — FORKERT præ-eksisterende fund: transskription siger "gardinskinner var der da han flyttede ind" → gardinskinner optræder i observationer
+Eksempel — RIGTIGT præ-eksisterende fund: gardinskinner udelades helt fra observationer
+
+Eksempel — FORKERT fremdrift: transskription siger "vi er klar til næste fase" → fremdrift: "ca. 100% færdigt"
+Eksempel — RIGTIGT fremdrift: transskription siger "vi er klar til næste fase" → fremdrift: null
+
+Eksempel — FORKERT observationer: "Gipsvæggene er klar, finpuds ser flot ud" placeres i generelle_observationer
+Eksempel — RIGTIGT observationer: positive bekræftelser udelades helt — generelle_observationer: [], konklusion opsummerer den gode stand
+
+Transskription: ${transcription}`
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Scoring prompt (bruges med --score flag)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function scoringPrompt(transcription: string, baseline: string, niche: string): string {
-  return `Du er evaluator for et AI-system til håndværkere.
+function scoringPrompt(transcription: string, baseline: string, niche: string, nicheId = 'vvs'): string {
+  const nicheLabel = nicheId === 'inspektor'
+    ? 'En inspektør har dikteret denne talenotat fra en inspektion'
+    : 'En VVS-installatør har dikteret denne talenotat'
 
-En VVS-installatør har dikteret denne talenotat:
+  const criteria = nicheId === 'inspektor'
+    ? `KRITERIUM 1 — TYPE-DETEKTION (0=forkert type, 3=præcis og konsistent)
+KRITERIUM 2 — RUM-STRUKTUR (0=alt i prosa, 3=perfekt rum-for-rum inddeling)
+KRITERIUM 3 — OBSERVATIONS-PRÆCISION (0=fund tabt/forvansket, 3=alt bevaret)
+KRITERIUM 4 — FAGTERMINOLOGI (0=ingen, 3=præcis: K-klassifikation, alvorlighed, sikkerhedsfund)
+KRITERIUM 5 — INGEN HALLUCINATION (0=opfinder fund, 3=kun hvad der er nævnt)`
+    : `KRITERIUM 1 — STRUKTUR (0=alt i prosa, 3=perfekt kategori-adskillelse)
+KRITERIUM 2 — FAGTERMINOLOGI (0=ingen, 3=præcis fagterminologi bevaret)
+KRITERIUM 3 — FAKTURERINGSRELEVANS (0=intet, 3=komplet: tid + materialer)
+KRITERIUM 4 — HANDLINGSPRÆCISION (0=vage, 3=præcise og kategoriserede)
+KRITERIUM 5 — NØJAGTIGHED (0=fakta tabt, 3=alt fra transskriptionen bevaret)`
+
+  return `Du er evaluator for et AI-system til professionelle brugere.
+
+${nicheLabel}:
 ---
 ${transcription}
 ---
 
 To AI-systemer har analyseret notatet. Score dem begge på disse 5 kriterier (0-3 point hver):
 
-KRITERIUM 1 — STRUKTUR (0=alt i prosa, 3=perfekt kategori-adskillelse)
-KRITERIUM 2 — FAGTERMINOLOGI (0=ingen, 3=præcis fagterminologi bevaret)
-KRITERIUM 3 — FAKTURERINGSRELEVANS (0=intet, 3=komplet: tid + materialer)
-KRITERIUM 4 — HANDLINGSPRÆCISION (0=vage, 3=præcise og kategoriserede)
-KRITERIUM 5 — NØJAGTIGHED (0=fakta tabt, 3=alt fra transskriptionen bevaret)
+${criteria}
 
 SYSTEM A (baseline):
 ${baseline}
@@ -261,7 +457,8 @@ async function runEval() {
   // Vælg niche-prompt
   const getNichePrompt = (transcription: string): string => {
     if (nicheArg === 'vvs') return vvsPromptV1(transcription)
-    throw new Error(`Ukendt niche: ${nicheArg}`)
+    if (nicheArg === 'inspektor') return inspektorPromptV1(transcription)
+    throw new Error(`Ukendt niche: ${nicheArg}. Tilgængelige: vvs, inspektor`)
   }
 
   printHeader(`AidKick Prompt Evaluering — niche: ${nicheArg.toUpperCase()} | ${toTest.length} sample(s) | score: ${scoreMode}`)
@@ -295,7 +492,7 @@ async function runEval() {
       console.log('\n⚖️  Scorer med GPT-4o...')
       const scoreRaw = await callOpenAIRaw(
         client,
-        scoringPrompt(sample.transcription, baselineRaw, nicheRaw),
+        scoringPrompt(sample.transcription, baselineRaw, nicheRaw, nicheArg),
         'scoring'
       )
       let score: any
