@@ -424,8 +424,24 @@ TYPE: note (fallback)
 Regler:
 - Vælg KUN én type — den der passer bedst
 - Inkludér ALTID title, summary, tasks og open_questions (selvom de er [])
+- Ekstraher ALLE konkrete handlinger der nævnes i transskriptionen — vær udtømmende og inkluderende. Det er bedre at have én task for meget end at glemme én.
 - Opfind aldrig information der ikke er nævnt i transskriptionen
 - Returner KUN valid JSON — ingen tekst udenfor JSON
+
+Hvad tæller som en task (vær eksplicit og udtømmende — ekstraher ALT):
+- Direkte instruktioner: "skal kontakte X", "ring til Y", "bestil Z", "send mail til W"
+- Implicitte handlinger: "vi mangler at høre fra X" → task: "Følg op med X"
+- Aftaler indgået med andre: "Jens skulle sende dokumenterne" → task: "Modtag dokumenter fra Jens"
+- Egne handlinger: "jeg skal...", "jeg vil...", "jeg må huske at..."
+- Husk-ting: "huske at X", "ikke glemme at Y", "vigtigt at få gjort Z"
+- Forberedelser: "skal læse op på X inden mødet", "skal forberede Y"
+- Opfølgning: "tjekke ind med X", "følge op på Y", "spørge Z om W"
+- Beslutninger der kræver handling: "vi vælger A" → hvis A kræver setup eller implementering, lav task
+- Næste skridt nævnt eksplicit: "næste skridt er...", "som det næste skal vi..."
+Hvad tæller IKKE som en task:
+- Ting der allerede er udført: "jeg har sendt mailen", "vi har besluttet at..."
+- Generelle observationer uden handling: "det var en god dag", "X var interessant"
+- Hypotetiske scenarier uden commitment: "vi kunne måske..." (medmindre der følger en konkret aftale)
 
 Hvad tæller som et åbent spørgsmål (open_questions):
 - Eksplicitte spørgsmål: "hvad koster det?", "hvem tager sig af X?"
@@ -433,6 +449,11 @@ Hvad tæller som et åbent spørgsmål (open_questions):
 - Uafklarede afhængigheder: "det afhænger af Y", "vi afventer svar fra Z"
 - Ting der skal undersøges: "vi skal finde ud af...", "mangler at tjekke..."
 Hvad tæller IKKE: ting der allerede er besvaret i samme transskription
+
+Distinktion task vs. open_question:
+- Hvis det kan handles direkte → task
+- Hvis det kræver svar/afklaring fra anden side → open_question
+- Hvis det er begge dele → læg i tasks med formuleringen "Få afklaret X med Y"
 
 Transskription: ${transcription}`
 }

@@ -34,7 +34,17 @@ const db = getFirestore()
 const generelPrompt = `Du er en produktivitetsassistent. Analyser denne transskription og returner JSON med:
 1. En kort sigende titel (max 6 ord)
 2. Et kort resume (2-3 sætninger)
-3. En liste af konkrete opgaver/handlinger
+3. En liste af konkrete opgaver/handlinger — vær UDTØMMENDE: ekstraher ALLE handlinger der nævnes, både eksplicitte og implicitte. Det er bedre at have én opgave for meget end at glemme én.
+
+Hvad tæller som en opgave:
+- Direkte instruktioner ("ring til X", "bestil Y", "send mail til Z")
+- Implicitte handlinger ("vi mangler at høre fra X" → "Følg op med X")
+- Aftaler ("Jens skulle sende dokumenter" → "Modtag dokumenter fra Jens")
+- Egne handlinger ("jeg skal...", "jeg vil...", "jeg må huske at...")
+- Forberedelser og opfølgning
+- Næste skridt nævnt eksplicit
+Hvad tæller IKKE: ting allerede udført, generelle observationer uden handling, hypotetiske scenarier uden commitment.
+
 Returner KUN dette JSON format:
 {
     "title": "...",
