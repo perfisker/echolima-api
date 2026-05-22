@@ -1,5 +1,6 @@
 import { initializeApp, cert } from 'firebase-admin/app'
 import { getFirestore } from 'firebase-admin/firestore'
+import { Capabilities } from '../src/types'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -161,6 +162,24 @@ Regler:
 Transskription: {{transcription}}`
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Niche Capabilities — Fase 1: tomme skabeloner
+//
+// Alle aktive niches får et capabilities-felt med tomme arrays. Det giver
+// Android mulighed for at starte parse-logik uden at se ukendte felter.
+//
+// Fase 2 (fremtidig): fyld extraFields til at matche prompt-output,
+// tilføj voice commands og metadata flags. Bump version pr. ændring.
+//
+// Se EchoLima_Niche_Capabilities_Architecture.md §7 for migrations-plan.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const emptyCapabilities: Capabilities = {
+  extraFields: [],
+  voiceCommands: [],
+  metadataFlags: []
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Niche-definitioner
 //
 // generel       — aktiv, alle tiers
@@ -184,7 +203,8 @@ const niches = [
     appIds: ['echolima'],
     isActive: true,
     order: 0,
-    version: '1.0'
+    version: '1.1.0',  // 22. maj 2026: capabilities-schema tilføjet (Fase 1, tomme arrays)
+    capabilities: emptyCapabilities
   },
   {
     id: 'haandvaerker',
@@ -198,7 +218,8 @@ const niches = [
     appIds: ['echolima'],
     isActive: true,
     order: 2,
-    version: '1.1.0'  // 21. maj 2026: tid_min → tid_timer + transporttid_timer top-level felt
+    version: '1.2.0',  // 22. maj 2026: capabilities-schema tilføjet (Fase 1, tomme arrays)
+    capabilities: emptyCapabilities
   },
   {
     id: 'vvs',
@@ -212,7 +233,7 @@ const niches = [
     appIds: [],          // Tom → vises IKKE i GET /niches-responses
     isActive: false,     // Inaktiv → kan ikke vælges af klient eller modtages som nicheId
     order: 99,           // Sidst — irrelevant da den er filtreret fra
-    version: '1.0'
+    version: '1.0'       // Legacy — ingen capabilities-felt (ikke nødvendigt for arkiveret niche)
   }
 ]
 

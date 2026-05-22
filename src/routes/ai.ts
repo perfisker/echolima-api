@@ -570,7 +570,7 @@ router.post('/transcribe', verifyToken, upload.single('file'), async (req: AuthR
 })
 
 // POST /ai/analyze
-// Body: { transcription: string, nicheId?: string }
+// Body: { transcription: string, nicheId?: string, suffix?: string, fieldsToOverwrite?: string[] }
 // Returns: { title, summary, tasks, ... }  (shape afhænger af niche-prompt)
 //
 // Niche-håndtering:
@@ -583,12 +583,19 @@ router.post('/transcribe', verifyToken, upload.single('file'), async (req: AuthR
 //   - nicheId === aktiv niche men bruger har for lavt tier → 403 med
 //     stable error-kode 'niche_tier_required'
 //
+// rerun_analysis_with_suffix (Capabilities V1 action-type):
+//   - suffix: string → appendes til den endelige prompt (efter PII + ANALYSIS_SUFFIX)
+//   - fieldsToOverwrite: string[] → kun disse JSON-felter overskrives med ny analyse.
+//     Hvis fieldsToOverwrite er tomt eller mangler, returneres hele ny analyse.
+//   - Formål: voice command som "AI-forslag" kan bede backend køre en ekstra
+//     analyse med kreative forslag uden at erstatte den primære analyse.
+//
 // Event-logging: aiSummary-events skrives HER (ikke i /usage/record) så
 // vi kan fange nicheId. /usage/record håndterer kun counter-increment for
 // aiSummary — se hybrid-arbejdsdeling i routes/usage.ts.
 router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { transcription, nicheId: rawNicheId } = req.body
+    const { transcription, nicheId: rawNicheId, suffix, fieldsToOverwrite } = req.body
     if (!transcription || typeof transcription !== 'string') {
       res.status(400).json({ error: 'Mangler transskription i body' })
       return
@@ -633,6 +640,15 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
     promptText += PII_DETECTION_SUFFIX
     promptText += ANALYSIS_SUFFIX
 
+    // rerun_analysis_with_suffix — Capabilities V1 action-type.
+    // Suffix appendes EFTER PII + ANALYSIS_SUFFIX så det kan overskrive eller
+    // tilføje til den samlede instruktion. Typisk bruges det til kreative
+    // forslag, ekstra analyse-vinkler eller specifik uddybning.
+    const hasSuffix = typeof suffix === 'string' && suffix.trim().length > 0
+    if (hasSuffix) {
+      promptText += `\n\n${suffix.trim()}`
+    }
+
     const openai = getOpenAI()
     const completion = await callWithRetry(() =>
       openai.chat.completions.create({
@@ -658,6 +674,46 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
     // Sikrer at suggested_improvements / gaps / follow_up_questions ALTID
     // er til stede som arrays (også tomme) for konsistent klient-rendering.
     parsed = applyAnalysisDefaults(parsed)
+
+    // fieldsToOverwrite-merge: når suffix er til stede og klienten kun vil
+    // have specifikke felter opdateret (fx kun "suggested_improvements"),
+    // returnerer vi et objekt med kun de specificerede felter fra den nye
+    // analyse. Klienten merger dette ind i sin eksisterende note-state.
+    //
+    // Eksempel: voice command "AI-forslag" sender:
+    //   suffix: "Foreslå yderligere kreative vinkler...",
+    //   fieldsToOverwrite: ["suggested_improvements"]
+    // Response: { suggested_improvements: ["...", "..."] }
+    //
+    // Hvis fieldsToOverwrite er tom/mangler returneres hele parsed-objektet
+    // (standard analyse-flow eller fuld rerun).
+    if (hasSuffix && Array.isArray(fieldsToOverwrite) && fieldsToOverwrite.length > 0) {
+      const partial: Record<string, any> = {}
+      for (const field of fieldsToOverwrite) {
+        if (typeof field === 'string' && field in parsed) {
+          partial[field] = parsed[field]
+        }
+      }
+      // Event-logging for suffix-rerun
+      try {
+        const db = getFirestore()
+        const totalTokens = completion.usage?.total_tokens ?? 0
+        await db.collection('events').add({
+          uid,
+          appId: 'echolima',
+          type: 'aiSummaryRerun',
+          nicheId: resolvedNicheId,
+          fieldsToOverwrite,
+          timestamp: Date.now(),
+          tokens: totalTokens,
+          costUsd: totalTokens * 0.000000375
+        })
+      } catch (logErr) {
+        console.error('ai/analyze rerun event-log fejl (response sendes alligevel):', logErr)
+      }
+      res.json(partial)
+      return
+    }
 
     // Event-logging — fang nicheId så /admin/niche-stats kan aggregere.
     // Wrappet i try/catch så event-skrivefejl ikke vælter den legitime

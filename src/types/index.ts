@@ -72,6 +72,81 @@ export interface NicheDoc {
   version: string               // Til sporbarhed af prompt-iterationer
   createdAt: number             // Date.now() — matcher seedNiches og seedTiers
   updatedAt: number
+  capabilities?: Capabilities   // Niche-specifikke capabilities (optional — Fase 1: tomme arrays)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Niche Capabilities System (Architecture-runde 17. maj 2026)
+// Se: EchoLima_Niche_Capabilities_Architecture.md for beslutninger.
+//
+// Capabilities er klient-metadata til dynamisk adaptation af renderer +
+// voice-engine. Prompt forbliver source of truth for AI-analyse-output.
+// Capabilities-listen vedligeholdes manuelt i sync med promptens felter.
+//
+// V1 understøtter tre action-typer:
+//   rerun_analysis_with_suffix — backend kører /ai/analyze igen med suffix
+//   set_metadata_flag          — Android skriver flag lokalt til Firestore
+//   local_ui                   — Android åbner UI-handling (ingen round-trip)
+// ─────────────────────────────────────────────────────────────────────────────
+
+type LocalizedText = { da: string; en?: string }
+type LocalizedStringArray = { da: string[]; en?: string[] }
+type TierId = 'tier_free' | 'tier_basic' | 'tier_pro' | 'tier_unlimited'
+
+// ─── ExtraField — schema-felt som prompten producerer ────────────────────────
+export interface ExtraFieldDef {
+  id: string                              // 'deltagere', stabilt ID
+  displayName: LocalizedText
+  type: 'string' | 'string[]' | 'object[]' | 'number' | 'boolean'
+  location: 'top_level' | 'summary' | 'metadata'
+  minTier?: TierId
+  minClientVersion?: string               // semver, optional
+}
+
+// ─── VoiceCommand — interaktiv trigger med action ────────────────────────────
+export type VoiceActionType =
+  | 'rerun_analysis_with_suffix'
+  | 'set_metadata_flag'
+  | 'local_ui'
+// V2-extensions (IKKE implementeret endnu): 'invoke_endpoint' | 'chain'
+
+export interface VoiceCommandDef {
+  id: string                              // 'ai_suggestions', stabilt ID
+  triggers: LocalizedStringArray
+  action: {
+    type: VoiceActionType
+    params: Record<string, unknown>       // type-afhængigt — valideres pr. type
+  }
+  description?: LocalizedText             // til "hvad kan jeg sige"-listing
+  minTier?: TierId
+  minClientVersion?: string
+}
+
+// ─── MetadataFlag — semantisk tag på note ────────────────────────────────────
+export interface MetadataFlagDef {
+  id: string                              // 'pii_detected', stabilt ID
+  displayName: LocalizedText
+  visualHint?: {
+    color?: string                        // hex, fx '#FF6B6B'
+    icon?: string                         // ikon-navn, fx 'shield-alert'
+  }
+  autoDetect?: boolean                    // backend kan auto-tagge
+  minTier?: TierId
+  minClientVersion?: string
+}
+
+// ─── Capabilities-container ──────────────────────────────────────────────────
+export interface Capabilities {
+  extraFields: ExtraFieldDef[]
+  voiceCommands: VoiceCommandDef[]
+  metadataFlags: MetadataFlagDef[]
+}
+
+// ─── AppDoc — apps/{appId} i Firestore ───────────────────────────────────────
+export interface AppDoc {
+  id: string
+  displayName: LocalizedText
+  commonCapabilities?: Capabilities       // app-globale capabilities
 }
 
 // Subset returneret af GET /niches (klient-public). Bemærk: prompt-feltet
@@ -82,4 +157,14 @@ export interface NichePublic {
   description: { da: string; en: string }
   minTier: string
   order: number
+  capabilities?: Capabilities             // niche-specifikke — optional
+}
+
+// ─── NichesResponse — GET /niches response-shape ─────────────────────────────
+// commonCapabilities: app-globale capabilities fra apps/{appId}
+// niches: filtrerede + tier-sorterede niches med niche-specifikke capabilities
+// Backward-compat: gamle klienter der kun læser .niches[] fortsætter med at virke.
+export interface NichesResponse {
+  commonCapabilities?: Capabilities
+  niches: NichePublic[]
 }

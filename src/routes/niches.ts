@@ -1,6 +1,6 @@
 import { Router, Response } from 'express'
 import { getFirestore } from 'firebase-admin/firestore'
-import { AuthRequest, NicheDoc, NichePublic } from '../types'
+import { AuthRequest, AppDoc, NicheDoc, NichePublic, NichesResponse } from '../types'
 import { verifyToken } from '../middleware/auth'
 
 const router = Router()
@@ -44,9 +44,19 @@ router.get('/', verifyToken, async (req: AuthRequest, res: Response) => {
 
     const db = getFirestore()
 
-    // Hent brugerens tier (vi tier-filtrerer i memory bagefter)
-    const userSnap = await db.collection('users').doc(uid).get()
+    // Hent brugerens tier + app-doc parallelt for at spare latency.
+    // app-doc'et indeholder commonCapabilities (app-globale voice commands osv.).
+    const [userSnap, appSnap] = await Promise.all([
+      db.collection('users').doc(uid).get(),
+      db.collection('apps').doc(appId).get()
+    ])
+
     const userTier = userSnap.data()?.tierId ?? 'tier_free'
+
+    // commonCapabilities fra apps/{appId}. Fallback til undefined hvis app-doc
+    // ikke eksisterer endnu (fx under Fase 1 inden seedApps er kørt).
+    const appData = appSnap.exists ? (appSnap.data() as AppDoc) : undefined
+    const commonCapabilities = appData?.commonCapabilities
 
     // Query aktive niches for det specifikke app.
     //
@@ -67,16 +77,32 @@ router.get('/', verifyToken, async (req: AuthRequest, res: Response) => {
       })
       .filter(niche => tierMeetsMinimum(userTier, niche.minTier))
       .sort((a, b) => a.order - b.order)
-      .map(niche => ({
-        // Eksplicit projektion: KUN disse felter, INGEN prompt
-        id: niche.id,
-        displayName: niche.displayName,
-        description: niche.description,
-        minTier: niche.minTier,
-        order: niche.order
-      }))
+      .map(niche => {
+        // Eksplicit projektion: KUN disse felter, INGEN prompt.
+        // capabilities inkluderes (kan være undefined hvis niche endnu ikke
+        // er populeret i Fase 2) — Android ignorerer undefined-felter stille.
+        const projected: NichePublic = {
+          id: niche.id,
+          displayName: niche.displayName,
+          description: niche.description,
+          minTier: niche.minTier,
+          order: niche.order
+        }
+        if (niche.capabilities !== undefined) {
+          projected.capabilities = niche.capabilities
+        }
+        return projected
+      })
 
-    res.json({ niches })
+    // NichesResponse-shape: backward-compat — gamle klienter der kun læser
+    // .niches[] fortsætter med at virke. commonCapabilities ignoreres af
+    // gamle JSON-parsers (Gson i Android ignorerer ukendte felter).
+    const response: NichesResponse = { niches }
+    if (commonCapabilities !== undefined) {
+      response.commonCapabilities = commonCapabilities
+    }
+
+    res.json(response)
   } catch (err) {
     console.error('niches fejl:', err)
     res.status(500).json({ error: 'server_error', message: 'Serverfejl' })

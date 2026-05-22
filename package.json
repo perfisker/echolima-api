@@ -6,7 +6,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "ts-node-dev --respawn src/index.ts"
+    "dev": "ts-node-dev --respawn src/index.ts",
+    "seed:niches": "npx ts-node scripts/seedNiches.ts",
+    "seed:apps": "npx ts-node scripts/seedApps.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
