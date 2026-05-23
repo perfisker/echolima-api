@@ -236,8 +236,21 @@ function applyPiiDetection(
 
   // Overskriv altid med konsoliderede værdier — sikrer at felterne ALTID
   // er til stede, også når model glemte dem.
-  modelResponse.piiDetected = combined.length > 0
+  const piiDetected = combined.length > 0
+  modelResponse.piiDetected = piiDetected
   modelResponse.piiTypes = combined
+
+  // MetadataFlags-integration (Capabilities V1, Fase 2):
+  // Sæt metadata.flags: ['pii_detected'] så Android kan rendere PII-badge
+  // semantisk korrekt via Dynamic Field Renderer + MetadataFlagsSystem.
+  // Samme flag kan sættes manuelt via voice command 'pii_shield_flag'.
+  if (piiDetected) {
+    modelResponse.metadata = modelResponse.metadata ?? {}
+    modelResponse.metadata.flags = modelResponse.metadata.flags ?? []
+    if (!modelResponse.metadata.flags.includes('pii_detected')) {
+      modelResponse.metadata.flags.push('pii_detected')
+    }
+  }
 
   return modelResponse
 }

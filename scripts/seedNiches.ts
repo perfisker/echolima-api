@@ -1,6 +1,6 @@
 import { initializeApp, cert } from 'firebase-admin/app'
 import { getFirestore } from 'firebase-admin/firestore'
-import { Capabilities } from '../src/types'
+import { Capabilities, ExtraFieldDef } from '../src/types'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -312,21 +312,108 @@ Regler:
 Transskription: {{transcription}}`
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Niche Capabilities — Fase 1: tomme skabeloner
+// Niche Capabilities — Fase 2: population (22. maj 2026)
 //
-// Alle aktive niches får et capabilities-felt med tomme arrays. Det giver
-// Android mulighed for at starte parse-logik uden at se ukendte felter.
+// extraFields deklarerer hvilke felter prompten producerer — bruges af
+// Android's Dynamic Field Renderer til at rendere noter uden hardcoded typer.
 //
-// Fase 2 (fremtidig): fyld extraFields til at matche prompt-output,
-// tilføj voice commands og metadata flags. Bump version pr. ændring.
+// For niches med type-diskriminator (generel, inspektor) er extraFields
+// FORENINGEN af felter på tværs af alle undertyper. Android-rendereren
+// håndterer pr-type-rendering via sit Renderer Registry.
+//
+// voiceCommands + metadataFlags er tomme per-niche i V1 — alle app-globale.
+// Niche-specifikke commands (fx "tilføj rum" for inspektor) er Fase 3.
 //
 // Se EchoLima_Niche_Capabilities_Architecture.md §7 for migrations-plan.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const emptyCapabilities: Capabilities = {
-  extraFields: [],
-  voiceCommands: [],
-  metadataFlags: []
+// ─── Fælles ANALYSIS_SUFFIX-felter (alle niches) ─────────────────────────────
+// Disse tre felter appender ALTID til alle niche-prompts via ANALYSIS_SUFFIX
+// i ai.ts. De er identiske på tværs af niches, så vi definerer dem centralt.
+const analysisSuffixFields: ExtraFieldDef[] = [
+  { id: 'suggested_improvements', displayName: { da: 'Forslag',                 en: 'Suggestions' },          type: 'string[]', location: 'metadata' },
+  { id: 'gaps',                   displayName: { da: 'Mangler',                 en: 'Gaps' },                 type: 'string[]', location: 'metadata' },
+  { id: 'follow_up_questions',    displayName: { da: 'Opfølgningsspørgsmål',    en: 'Follow-up questions' },  type: 'string[]', location: 'metadata' }
+]
+
+// ─── generel extraFields (v1.2.0) ────────────────────────────────────────────
+// Generel producerer 5 type-skemaer (moede/opgave/beslutning/ide/note).
+// extraFields er FORENINGEN af alle felter på tværs af de 5 typer.
+// Android-rendereren filtrerer efter 'type'-diskriminatoren ved rendering.
+const generelExtraFields: ExtraFieldDef[] = [
+  // Fælles på tværs af alle 5 typer
+  { id: 'title',                   displayName: { da: 'Titel',                  en: 'Title' },                type: 'string',   location: 'top_level' },
+  { id: 'summary',                 displayName: { da: 'Resume',                 en: 'Summary' },              type: 'string',   location: 'top_level' },
+  { id: 'tasks',                   displayName: { da: 'Opgaver',                en: 'Tasks' },                type: 'object[]', location: 'top_level' },
+  { id: 'open_questions',          displayName: { da: 'Åbne spørgsmål',         en: 'Open questions' },       type: 'string[]', location: 'top_level' },
+  // Type: moede
+  { id: 'deltagere',               displayName: { da: 'Deltagere',              en: 'Participants' },         type: 'string[]', location: 'top_level' },
+  { id: 'beslutninger',            displayName: { da: 'Beslutninger',           en: 'Decisions' },            type: 'string[]', location: 'top_level' },
+  { id: 'naeste_moede',            displayName: { da: 'Næste møde',             en: 'Next meeting' },         type: 'string',   location: 'top_level' },
+  // Type: beslutning
+  { id: 'beslutning',              displayName: { da: 'Beslutning',             en: 'Decision' },             type: 'string',   location: 'top_level' },
+  { id: 'begrundelse',             displayName: { da: 'Begrundelse',            en: 'Reasoning' },            type: 'string',   location: 'top_level' },
+  { id: 'alternativer_fravalgt',   displayName: { da: 'Fravalgte alternativer', en: 'Rejected alternatives' },type: 'string[]', location: 'top_level' },
+  { id: 'konsekvenser',            displayName: { da: 'Konsekvenser',           en: 'Consequences' },         type: 'string[]', location: 'top_level' },
+  // Type: ide
+  { id: 'ide_beskrivelse',         displayName: { da: 'Idé-beskrivelse',        en: 'Idea description' },     type: 'string',   location: 'top_level' },
+  { id: 'fordele',                 displayName: { da: 'Fordele',               en: 'Advantages' },            type: 'string[]', location: 'top_level' },
+  { id: 'udfordringer',            displayName: { da: 'Udfordringer',           en: 'Challenges' },           type: 'string[]', location: 'top_level' },
+  ...analysisSuffixFields
+  // Total: 17 entries
+]
+
+// ─── haandvaerker extraFields (v1.3.0) ───────────────────────────────────────
+// Ét fast type-skema: haandvaerker_visit
+const haandvaerkerExtraFields: ExtraFieldDef[] = [
+  { id: 'title',                displayName: { da: 'Titel',                en: 'Title' },               type: 'string',   location: 'top_level' },
+  { id: 'kunde',                displayName: { da: 'Kunde',                en: 'Customer' },            type: 'string',   location: 'top_level' },
+  { id: 'transporttid_timer',   displayName: { da: 'Transporttid (timer)', en: 'Travel time (hours)' }, type: 'number',   location: 'top_level' },
+  { id: 'udfoert_arbejde',      displayName: { da: 'Udført arbejde',       en: 'Work performed' },      type: 'object[]', location: 'top_level' },
+  { id: 'materialer_brugt',     displayName: { da: 'Materialer brugt',     en: 'Materials used' },      type: 'object[]', location: 'top_level' },
+  { id: 'observationer',        displayName: { da: 'Observationer',        en: 'Observations' },        type: 'string[]', location: 'top_level' },
+  { id: 'bestillinger',         displayName: { da: 'Bestillinger',         en: 'Orders' },              type: 'string[]', location: 'top_level' },
+  { id: 'naeste_besoeg',        displayName: { da: 'Næste besøg',          en: 'Next visit' },          type: 'string',   location: 'top_level' },
+  { id: 'faktureringsgrundlag', displayName: { da: 'Faktureringsgrundlag', en: 'Invoicing basis' },     type: 'string',   location: 'top_level' },
+  { id: 'tasks',                displayName: { da: 'Øvrige opgaver',       en: 'Other tasks' },         type: 'string[]', location: 'top_level' },
+  ...analysisSuffixFields
+  // Total: 13 entries
+]
+
+// ─── inspektor extraFields (v1.1.0) ──────────────────────────────────────────
+// Inspektor producerer 4 type-skemaer (fraflytning/indflytning/byggeplads/tilstand).
+// extraFields er FORENINGEN af felter på tværs af alle 4 typer.
+// NB: 'parter' bruger type: 'object' (ikke 'object[]') — nested single objekt
+// { lejer: string|null, udlejer: string|null }. Type-union udvidet 22. maj 2026.
+const inspektorExtraFields: ExtraFieldDef[] = [
+  // Fælles på tværs af alle 4 inspektionstyper
+  { id: 'title',                   displayName: { da: 'Titel',                      en: 'Title' },                type: 'string',   location: 'top_level' },
+  { id: 'objekt',                  displayName: { da: 'Objekt/adresse',             en: 'Object/address' },       type: 'string',   location: 'top_level' },
+  { id: 'dato',                    displayName: { da: 'Dato',                       en: 'Date' },                 type: 'string',   location: 'top_level' },
+  { id: 'rum',                     displayName: { da: 'Rum/områder',                en: 'Rooms/areas' },          type: 'object[]', location: 'top_level' },
+  { id: 'generelle_observationer', displayName: { da: 'Generelle observationer',    en: 'General observations' }, type: 'string[]', location: 'top_level' },
+  { id: 'naeste_skridt',           displayName: { da: 'Næste skridt',              en: 'Next steps' },            type: 'string[]', location: 'top_level' },
+  { id: 'konklusion',              displayName: { da: 'Konklusion',                 en: 'Conclusion' },           type: 'string',   location: 'top_level' },
+  { id: 'tasks',                   displayName: { da: 'Øvrige opgaver',             en: 'Other tasks' },          type: 'string[]', location: 'top_level' },
+  // Type: fraflytning + indflytning — nested single objekt { lejer, udlejer }
+  { id: 'parter',                  displayName: { da: 'Parter',                     en: 'Parties' },              type: 'object',   location: 'top_level' },
+  // Type: fraflytning
+  { id: 'samlet_estimat',          displayName: { da: 'Samlet estimat',             en: 'Total estimate' },       type: 'string',   location: 'top_level' },
+  // Type: byggeplads
+  { id: 'fremdrift',               displayName: { da: 'Fremdrift',                  en: 'Progress' },             type: 'string',   location: 'top_level' },
+  { id: 'sikkerhedsfund',          displayName: { da: 'Sikkerhedsfund',             en: 'Safety findings' },      type: 'string[]', location: 'top_level' },
+  { id: 'bestillinger',            displayName: { da: 'Bestillinger',               en: 'Orders' },               type: 'string[]', location: 'top_level' },
+  ...analysisSuffixFields
+  // Total: 16 entries
+]
+
+// ─── Capabilities-hjælpere ────────────────────────────────────────────────────
+function makeCapabilities(extraFields: ExtraFieldDef[]): Capabilities {
+  return {
+    extraFields,
+    voiceCommands: [],   // Per-niche voice commands er tomme i V1
+    metadataFlags: []    // Per-niche metadata flags er tomme i V1
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -353,8 +440,8 @@ const niches = [
     appIds: ['echolima'],
     isActive: true,
     order: 0,
-    version: '1.1.0',  // 22. maj 2026: capabilities-schema tilføjet (Fase 1, tomme arrays)
-    capabilities: emptyCapabilities
+    version: '1.2.0',  // 22. maj 2026: Fase 2 — extraFields populeret (17 entries)
+    capabilities: makeCapabilities(generelExtraFields)
   },
   {
     id: 'haandvaerker',
@@ -368,8 +455,8 @@ const niches = [
     appIds: ['echolima'],
     isActive: true,
     order: 2,
-    version: '1.2.0',  // 22. maj 2026: capabilities-schema tilføjet (Fase 1, tomme arrays)
-    capabilities: emptyCapabilities
+    version: '1.3.0',  // 22. maj 2026: Fase 2 — extraFields populeret (13 entries)
+    capabilities: makeCapabilities(haandvaerkerExtraFields)
   },
   {
     id: 'inspektor',
@@ -383,8 +470,8 @@ const niches = [
     appIds: ['echolima'],
     isActive: true,
     order: 3,
-    version: '1.0.0',  // 22. maj 2026: første version — 4 inspektionstyper, rum-for-rum
-    capabilities: emptyCapabilities
+    version: '1.1.0',  // 22. maj 2026: Fase 2 — extraFields populeret (16 entries)
+    capabilities: makeCapabilities(inspektorExtraFields)
   },
   {
     id: 'vvs',
@@ -415,7 +502,10 @@ async function seedNiches() {
       updatedAt: Date.now(),
     })
     const statusTag = niche.isActive ? `aktiv, ${niche.appIds.join(',')}` : 'ARKIVERET'
-    console.log(`  ✓ ${niche.id.padEnd(15)} (minTier: ${niche.minTier}, ${statusTag})`)
+    const capCount = ('capabilities' in niche && niche.capabilities)
+      ? `extraFields: ${niche.capabilities.extraFields.length}`
+      : 'ingen capabilities'
+    console.log(`  ✓ ${niche.id.padEnd(15)} v${niche.version.padEnd(6)} (${statusTag}, ${capCount})`)
   }
 
   await batch.commit()

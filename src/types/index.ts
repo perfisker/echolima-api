@@ -97,7 +97,9 @@ type TierId = 'tier_free' | 'tier_basic' | 'tier_pro' | 'tier_unlimited'
 export interface ExtraFieldDef {
   id: string                              // 'deltagere', stabilt ID
   displayName: LocalizedText
-  type: 'string' | 'string[]' | 'object[]' | 'number' | 'boolean'
+  type: 'string' | 'string[]' | 'object' | 'object[]' | 'number' | 'boolean'
+  // 'object'  = nested single object (fx inspektor's parter: { lejer, udlejer })
+  // 'object[]' = array af nested objects (fx rum[], materialer_brugt[])
   location: 'top_level' | 'summary' | 'metadata'
   minTier?: TierId
   minClientVersion?: string               // semver, optional

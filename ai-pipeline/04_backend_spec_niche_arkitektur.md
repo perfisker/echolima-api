@@ -517,3 +517,71 @@ PATCH /auth/me     { defaultNiche? }     → { updated }
 - Room v13-migration til liste af image-paths — Android-sprint
 - Ændringer i Cloud Functions (Storage-triggers opdateres til ny sti-struktur i separat sprint)
 - Nye Stripe-produkter eller tier-priser
+
+---
+
+## Niche Capabilities — Fase 1 (implementeret 22. maj 2026)
+
+Arkitektur-beslutninger: se `EchoLima_Niche_Capabilities_Architecture.md`
+
+### Hvad der er implementeret
+
+**TypeScript-typer** (`src/types/index.ts`):
+- `ExtraFieldDef`, `VoiceCommandDef`, `MetadataFlagDef`, `Capabilities` — capabilities-schema
+- `AppDoc` — apps/{appId} Firestore-doc med `commonCapabilities`
+- `NichePublic` udvidet med `capabilities?: Capabilities`
+- `NichesResponse` — ny response-shape med `commonCapabilities` + `niches[]`
+- `NicheDoc` udvidet med `capabilities?: Capabilities`
+
+**seedNiches.ts** (version bump):
+- `generel`: `1.0` → `1.1.0` (capabilities-schema tilføjet, tomme arrays)
+- `haandvaerker`: `1.1.0` → `1.2.0` (capabilities-schema tilføjet, tomme arrays)
+- `vvs` (legacy): uændret
+
+**seedApps.ts** (ny fil):
+- Opretter `apps/echolima` med `commonCapabilities: { extraFields: [], voiceCommands: [], metadataFlags: [] }`
+- Brug: `npm run seed:apps`
+- `merge: true` — skriver ikke over eksisterende felter (bundleId, platform, version)
+
+**GET /niches** (`src/routes/niches.ts`):
+- Henter nu `apps/{appId}` parallelt med users/{uid} (én Firestore round-trip)
+- Returnerer `NichesResponse` med `commonCapabilities` + `niches[]`
+- Hvert niche-element inkluderer `capabilities` hvis det er til stede
+- Backward-compat: gamle klienter der læser kun `.niches[]` fortsætter uberørt
+
+**Telemetry** (`src/routes/telemetry.ts`, mountet på `/telemetry`):
+- `POST /telemetry/capability_invoked` — capability aktiveret succesfuldt
+- `POST /telemetry/capability_failed` — capability sprunget over (reason valideres)
+- `POST /telemetry/capability_listed` — bruger åbnede "hvad kan jeg sige"-skærm
+- Alle events skrives til Firestore `events`-collection
+
+**rerun_analysis_with_suffix** (`src/routes/ai.ts`):
+- `POST /ai/analyze` accepts nu optional `suffix: string` og `fieldsToOverwrite: string[]`
+- suffix appendes til den endelige prompt (efter PII + ANALYSIS_SUFFIX)
+- Når `fieldsToOverwrite` er specificeret returneres kun de navngivne felter fra ny analyse
+- Event-type `aiSummaryRerun` logges separat fra `aiSummary` for cost-tracking
+
+### Brug af rerun_analysis_with_suffix (eksempel)
+
+```json
+POST /ai/analyze
+{
+  "transcription": "...",
+  "nicheId": "haandvaerker",
+  "suffix": "Foreslå yderligere kreative løsninger og forebyggende vedligehold kunden kan overveje.",
+  "fieldsToOverwrite": ["suggested_improvements"]
+}
+```
+
+Response: kun `{ "suggested_improvements": ["...", "..."] }` — klienten merger ind i eksisterende note.
+
+### Næste skridt (Fase 2)
+
+1. Fyld `haandvaerker.capabilities.extraFields` med felter der matcher niche-JSON-output:
+   - `kunde`, `udfoert_arbejde`, `materialer_brugt`, `observationer`, `bestillinger`, `faktureringsgrundlag`
+2. Tilføj app-globale voice commands til `apps/echolima.commonCapabilities.voiceCommands`:
+   - `ai_suggestions` → `rerun_analysis_with_suffix`
+   - `show_capabilities` → `local_ui: show_capability_list`
+   - `pii_shield` → `set_metadata_flag: pii_detected`
+3. Android implementerer Dynamic Field Renderer + Voice Command Engine (se arkitektur-doc §8)
+4. Bump niche `version`-felt pr. capabilities-ændring (Android cacher pr. version)
