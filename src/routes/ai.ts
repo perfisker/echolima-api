@@ -371,7 +371,7 @@ TYPE: moede
 {
   "type": "moede",
   "title": "Kort mødebeskrivelse (max 8 ord)",
-  "summary": "Hvad mødet handlede om og hvad der blev nået (2-3 sætninger)",
+  "summary": "Fyldig beskrivelse af mødet — emner diskuteret, beslutninger truffet, hovedopgaver aftalt. Skalér længden med mødets indhold (se RESUME-PRINCIPPER nederst). Resumet skal være SELVSTÆNDIGT — læser skal kunne forstå mødet uden at læse tasks[] eller beslutninger[].",
   "deltagere": ["Navne nævnt i transskriptionen — [] hvis ingen nævnt"],
   "beslutninger": ["Konkrete beslutninger taget i mødet"],
   "tasks": [
@@ -387,7 +387,7 @@ TYPE: opgave
 {
   "type": "opgave",
   "title": "Kort opgavebeskrivelse (max 8 ord)",
-  "summary": "Kort kontekst for opgaven hvis relevant — ellers null",
+  "summary": "Kontekst og baggrund for opgaven — så fyldigt som transskriptionen tillader. Skalér med indhold (se RESUME-PRINCIPPER). Hvis opgaven er triviel uden kontekst, null. Resumet skal nævne hvad der skal gøres og hvorfor, så læser ikke kun ser tasks[]-listen.",
   "tasks": [
     { "handling": "Hvad skal gøres", "prioritet": "hast eller normal — brug 'hast' kun hvis det eksplicit nævnes", "deadline": "Deadline hvis nævnt — ellers null", "ejer": "Navn hvis nævnt — ellers null" }
   ],
@@ -400,7 +400,7 @@ TYPE: beslutning
 {
   "type": "beslutning",
   "title": "Kort beslutningsbeskrivelse (max 8 ord)",
-  "summary": "Kontekst og baggrund for beslutningen (1-2 sætninger)",
+  "summary": "Kontekst og baggrund for beslutningen — så fyldigt som indholdet kræver. Skalér med transskriptionens omfang (se RESUME-PRINCIPPER). Resumet skal forklare HVORFOR beslutningen blev truffet og HVAD den indebærer, så læser kan forstå den uden at læse de andre felter.",
   "beslutning": "Den konkrete beslutning der er taget",
   "begrundelse": "Hvorfor denne beslutning — hvis nævnt, ellers null",
   "alternativer_fravalgt": ["Andre muligheder der blev overvejet men fravalgt — [] hvis ingen nævnt"],
@@ -415,7 +415,7 @@ TYPE: ide
 {
   "type": "ide",
   "title": "Kort idébeskrivelse (max 8 ord)",
-  "summary": "Idéen i et nøddeskal (1-2 sætninger)",
+  "summary": "Idéens kerne og kontekst — så fyldigt som transskriptionen kræver. Skalér med indhold (se RESUME-PRINCIPPER). Resumet skal indfange essensen af idéen, dens motivation og potentiale, så læser kan vurdere den uden at læse ide_beskrivelse.",
   "ide_beskrivelse": "Uddybende beskrivelse af idéen som dikteret",
   "fordele": ["Potentielle fordele nævnt — [] hvis ingen"],
   "udfordringer": ["Potentielle udfordringer nævnt — [] hvis ingen"],
@@ -429,7 +429,7 @@ TYPE: note (fallback)
 {
   "type": "note",
   "title": "Kort beskrivelse (max 8 ord)",
-  "summary": "Hvad notaten handler om (2-3 sætninger)",
+  "summary": "Fyldig beskrivelse af hvad notaten handler om — alle hovedpunkter, observationer og handlinger der indgår. Skalér med transskriptionens længde (se RESUME-PRINCIPPER). Resumet skal være SELVSTÆNDIGT og nævne alt væsentligt, så læser ikke behøver at læse tasks[] eller andre felter for at forstå indholdet.",
   "tasks": ["Konkrete handlinger hvis nævnt — [] hvis ingen"],
   "open_questions": ["Åbne spørgsmål eller uafklarede afhængigheder — [] hvis ingen"]
 }
@@ -468,6 +468,19 @@ Distinktion task vs. open_question:
 - Hvis det kræver svar/afklaring fra anden side → open_question
 - Hvis det er begge dele → læg i tasks med formuleringen "Få afklaret X med Y"
 
+RESUME-PRINCIPPER (gælder summary-feltet på ALLE typer):
+- Resume SKAL skalere med transskriptionens længde og kompleksitet — ingen fast øvre eller nedre grænse.
+- Vejledende skalering:
+  · Kort input (< 1 min tale, kort tekst)           → 1-3 sætninger
+  · Mellem input (1-5 min, ~150-500 ord)            → 1-2 afsnit
+  · Langt input (5-15 min, ~500-1500 ord)           → 2-3 afsnit eller flere
+  · Meget langt input (15+ min)                     → strukturér evt. med bullets eller key takeaways
+- Resume skal være SELVSTÆNDIGT: en læser skal kunne forstå indholdet uden at læse tasks[], open_questions[] eller andre strukturerede felter.
+- Resume skal nævne ALLE væsentlige punkter der findes i de andre felter — hvis tasks[] indeholder 5 opgaver, skal de figurere i resumet (samlet eller individuelt, men ikke ignoreres).
+- Resume skal nævne beslutninger, deltagere, hovedemner og udfald hvor relevant for den valgte type.
+- Prioritér FULDSTÆNDIGHED frem for korthed. Det er bedre at resumet er ét afsnit længere end at det udelader et væsentligt punkt.
+- Undgå tomme floskler ("Brugeren talte om..."), redundans og fyldord. Kvalitet over kvantitet — men aldrig så kort at indhold tabes.
+
 Transskription: ${transcription}`
 }
 
@@ -475,8 +488,8 @@ function visionPrompt(transcription: string): string {
   return `Du er en produktivitetsassistent. Du får et billede og en transskription fra en talenotat.
 Analyser begge og returner JSON med:
 1. En kort sigende titel (max 6 ord)
-2. Et kort resume der kombinerer hvad der ses på billedet og hvad der siges (2-3 sætninger)
-3. En liste af konkrete opgaver/handlinger baseret på begge inputs
+2. Et fyldigt resume der kombinerer hvad der ses på billedet og hvad der siges. Skalér længden med kompleksitet og omfang — ingen fast sætnings-grænse. Korte/simple optagelser → kortere resume; komplekse/lange optagelser → flere afsnit. Resumet skal være SELVSTÆNDIGT og nævne alle hovedpunkter fra både billede og tale.
+3. En liste af konkrete opgaver/handlinger baseret på begge inputs — vær UDTØMMENDE, ekstraher ALLE handlinger
 4. En præcis transskription af AL tekst der er synlig i billedet (bevar original formatering og rækkefølge)
 Returner KUN dette JSON format:
 {
@@ -646,6 +659,13 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
       promptText = analyzePrompt(transcription)
     }
 
+    // DIAGNOSTIC LOGGING (midlertidig — kan rives ud efter 1-2 dage).
+    // Indsat 23. maj 2026 for at debugge "niche-skifte slår ikke igennem på
+    // første kald"-rapport fra produktion. Logger hvad Android sender vs.
+    // hvad backend faktisk bruger så vi kan identificere hvor mismatch'et
+    // opstår (Android-state-bug, race condition, eller GPT-variabilitet).
+    console.log(`[ai/analyze niche-debug] uid=${uid} rawNicheId=${JSON.stringify(rawNicheId)} resolvedNicheId=${resolvedNicheId} promptVariant=${resolvedNicheId === 'generel' ? 'hardcoded-analyzePrompt' : `firestore-niche-${resolvedNicheId}`} suffixPresent=${typeof suffix === 'string' && suffix.trim().length > 0} transcriptionLen=${transcription.length}`)
+
     // PII-detektion + udvidet analyse gælder uanset niche-path. Appendes
     // ALTID til den endelige prompt så GPT-4o-mini producerer piiDetected/
     // piiTypes/suggested_improvements/gaps/follow_up_questions sammen med
@@ -667,7 +687,12 @@ router.post('/analyze', verifyToken, async (req: AuthRequest, res: Response) => 
       openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: promptText }],
-        max_tokens: 800,
+        // max_tokens bumpet fra 800 → 2000 (23. maj 2026) for at give plads
+        // til fyldige resumer på lange transskriptioner. Omkostning er ~$0.0007
+        // ekstra pr. kald på gpt-4o-mini — ubetydelig. Output trunkeres ved
+        // 2000 tokens (~1300 ord) hvilket bør være rigeligt selv til 30-min
+        // optagelser med strukturerede tasks, beslutninger, observationer osv.
+        max_tokens: 2000,
         response_format: { type: 'json_object' }
       })
     )
