@@ -1,0 +1,54 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EchoLima Firestore Security Rules
+// Etableret 23. maj 2026 — Architecture-WS security cleanup.
+//
+// VIGTIGT: Hvis Firebase Console allerede har eksisterende rules deployed,
+// skal de MERGES med dette indhold før deploy. Dette dokument indeholder
+// kun events-collection-reglen. Resten af collections (users, niches, apps,
+// tiers, contact_requests, feedback) skal have eksplicit rules — ellers
+// låses de af default-deny under rules_version='2'.
+//
+// Deploy:
+//   firebase deploy --only firestore:rules
+// ─────────────────────────────────────────────────────────────────────────────
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── events-collection (telemetri + AI-summary + storage-events) ───
+    // Backend skriver fra ai.ts + telemetry.ts. Alle event-docs skal have
+    // {uid, type, timestamp} + valgfri appId/nicheId/tokens/costUsd/etc.
+    // Client må KUN læse egne events. Skrivning fra client kræver at uid
+    // matcher request.auth.uid (forhindrer cross-user spoofing).
+    // Events er immutable — ingen update/delete.
+    match /events/{eventId} {
+      allow read: if request.auth != null
+        && resource.data.uid == request.auth.uid;
+      allow create: if request.auth != null
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasAll(['uid', 'type', 'timestamp'])
+        && request.resource.data.type is string
+        && request.resource.data.timestamp is number
+        && request.resource.size() < 5000;
+      allow update, delete: if false;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // TODO: Tilføj eksplicitte rules for følgende collections før deploy:
+    //   - users/{uid}                    (egen-bruger read/write via backend)
+    //   - users/{uid}/usage/{appId}      (read by owner, write by backend only)
+    //   - niches/{nicheId}               (read for authenticated, write backend-only)
+    //   - apps/{appId}                   (read for authenticated, write backend-only)
+    //   - tiers/{tierId}                 (read for authenticated, write backend-only)
+    //   - contact_requests/{id}          (write open, read backend-only)
+    //   - feedback/{id}                  (write open, read backend-only)
+    //
+    // ADVARSEL: Hvis Firebase Console har eksisterende rules der er bredere
+    // end ovenstående, så CLI-deploy af denne fil vil OVERSKRIVE dem helt.
+    // Verificér eksisterende rules i Firebase Console før deploy.
+    // ─────────────────────────────────────────────────────────────────────
+
+  }
+}

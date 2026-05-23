@@ -4,3 +4,16 @@ dist/
 *.json
 !package.json
 !tsconfig.json
+
+# Sensitive — never commit (defensive patterns tilføjet 23. maj 2026)
+# Wildcard *.txt med eksplicit whitelist er stærkere end konkrete navne.
+*.txt
+!README.txt
+!CHANGELOG.txt
+!LICENSE.txt
+KEYOT*
+OLD fileversion/
+secrets/
+*.key
+*.pem
+service-account*.json
