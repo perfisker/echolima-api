@@ -161,6 +161,28 @@ async function getHighestActiveTier(
 }
 
 // POST /stripe/create-checkout-session
+//
+// Bug-fix (23. maj 2026): tidligere oprettede dette endpoint ALTID en ny
+// Stripe Checkout Session uden at tjekke om brugeren allerede havde en
+// aktiv subscription. Det betød at hvert "Upgrade"-klik resulterede i
+// en ny subscription oven i de eksisterende → bruger blev opkrævet
+// flere gange for samme produkt (se Stripe-dashboard 22.-23. maj 2026).
+//
+// Ny adfærd:
+//   1. Tjek for active subscription på customer.
+//   2. Active sub med ANDET price-ID → kald stripe.subscriptions.update()
+//      med nyt price. Stripe håndterer proration automatisk. Webhook
+//      'customer.subscription.updated' opdaterer tier i Firestore.
+//      Returnerer { url: STRIPE_SUCCESS_URL } for backward-compat med
+//      Android-klient — den behøver ikke vide forskel på checkout vs.
+//      in-place upgrade.
+//   3. Active sub med SAMME price-ID → 400 'already_subscribed'.
+//   4. Ingen active sub → eksisterende checkout-flow (uændret).
+//
+// Hvis du senere vil flytte upgrade-logik til separat endpoint
+// (fx /stripe/change-plan), så hold dette her som ren first-time-
+// checkout. Indtil da er det acceptabelt at ét endpoint dækker
+// begge cases — det matcher Android's nuværende kald.
 router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const { tierId } = req.body
@@ -181,6 +203,66 @@ router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, re
     const userDoc = await db.collection('users').doc(uid).get()
     const existingCustomerId = userDoc.data()?.stripeCustomerId
 
+    // ─── Check for active subscription ───
+    // Hvis customer findes på Stripe-side, tjek for active subs FØR vi
+    // overhovedet overvejer at oprette en ny checkout-session.
+    if (existingCustomerId) {
+      const activeSubs = await stripe.subscriptions.list({
+        customer: existingCustomerId,
+        status: 'active',
+        limit: 10
+      })
+
+      if (activeSubs.data.length > 0) {
+        // Brugeren har mindst én aktiv subscription. Find den med højeste
+        // tier-prioritet (samme helper som webhook-handleren bruger ved
+        // degradation). Det undgår at vi vælger en lavere-tier sub hvis
+        // brugeren midlertidigt har flere (cleanup-edge case).
+        const highest = await getHighestActiveTier(stripe, existingCustomerId)
+        const targetSub = highest?.subscription ?? activeSubs.data[0]
+        const currentPriceId = targetSub.items.data[0]?.price?.id
+        const currentTierId  = highest?.tierId ?? (currentPriceId ? getTierIdFromPriceId(currentPriceId) : null)
+
+        // Same tier → afvis (forhindrer dobbelt-køb af samme produkt)
+        if (currentPriceId === priceId) {
+          res.status(400).json({
+            error: 'already_subscribed',
+            message: `Du har allerede aktivt ${tierId}-abonnement. Brug Customer Portal til at administrere det.`,
+            currentTierId
+          })
+          return
+        }
+
+        // Andet tier → in-place upgrade via subscriptions.update.
+        // proration_behavior='create_prorations' = standard: Stripe krediterer
+        // ubrugt tid på nuværende plan og opkræver differencen til nyt plan.
+        const subscriptionItemId = targetSub.items.data[0]?.id
+        if (!subscriptionItemId) {
+          // Defensive: hvis subscription mangler items (skulle aldrig ske
+          // for aktiv sub), fall back til checkout for at undgå crash.
+          console.warn(`stripe/create-checkout-session: active sub ${targetSub.id} mangler items — falder tilbage til checkout`)
+        } else {
+          await stripe.subscriptions.update(targetSub.id, {
+            items: [{
+              id: subscriptionItemId,
+              price: priceId
+            }],
+            proration_behavior: 'create_prorations',
+            metadata: { uid, tierId }
+          })
+
+          console.log(`Stripe in-place upgrade: ${uid} fra ${currentTierId} til ${tierId} (sub ${targetSub.id})`)
+
+          // Returner success-URL så Android-klienten kan navigere til
+          // bekræftelsessiden. Webhook 'customer.subscription.updated' har
+          // allerede (eller vil snart) opdatere tier i Firestore.
+          res.json({ url: successUrl })
+          return
+        }
+      }
+    }
+
+    // ─── Ingen active sub → first-time checkout flow ───
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       payment_method_types: ['card'],
