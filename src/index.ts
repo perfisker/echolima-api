@@ -46,7 +46,46 @@ const PORT = process.env.PORT ?? 3000
 
 // Middleware
 app.use(helmet())
-app.use(cors())
+
+// ─── CORS-allowlist ──────────────────────────────────────────────────────────
+// Eksplicit liste over web-origins der må kalde dette API. Android-klienten
+// går via Retrofit/OkHttp og sender ikke Origin-header — derfor påvirkes
+// mobile-traffic ikke af CORS. Listen styrer kun browser-requests.
+//
+// Historik:
+//   - Tidligere: app.use(cors()) (helt åbent — allow-all-origins)
+//   - 23. maj 2026: strammet op til eksplicit allowlist + aidkick.app
+//     tilføjet ifm. web-rebrand (Web-WS launch-prep)
+//
+// Origins der må kalde:
+//   - https://aidkick.app           → primær web-URL (rebrandet)
+//   - https://www.aidkick.app       → www-redirect (Firebase Hosting)
+//   - https://echolima-769c7.web.app → Firebase default-URL (backup)
+//   - http://localhost:*            → lokal udvikling (alle porte)
+//
+// Requests UDEN Origin-header (server-to-server, mobile apps, curl, Render
+// health-checks) tillades altid — CORS er kun en browser-protection-mekanisme.
+const allowedOrigins = new Set([
+  'https://aidkick.app',
+  'https://www.aidkick.app',
+  'https://echolima-769c7.web.app'
+])
+const localhostRegex = /^http:\/\/localhost(:\d+)?$/
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Ingen Origin = ikke browser-request (mobile/server/curl) → tillad
+    if (!origin) return callback(null, true)
+    // Allowlist match → tillad
+    if (allowedOrigins.has(origin)) return callback(null, true)
+    // Localhost (alle porte) → tillad (lokal dev)
+    if (localhostRegex.test(origin)) return callback(null, true)
+    // Alt andet → afvis + log så vi fanger ukendte origins der prøver
+    console.warn(`CORS: blokeret origin: ${origin}`)
+    callback(new Error(`Origin not allowed by CORS: ${origin}`))
+  },
+  credentials: true  // tillader auth-headers + cookies fra approved origins
+}))
 
 // Health check — placeret FØR rate-limiter (generalLimiter) så Render's
 // health-pings ikke regnes med i rate-budget'et. Et simpelt GET behøver hverken
