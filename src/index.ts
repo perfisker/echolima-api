@@ -58,17 +58,19 @@ app.use(helmet())
 //     tilføjet ifm. web-rebrand (Web-WS launch-prep)
 //
 // Origins der må kalde:
-//   - https://aidkick.app           → primær web-URL (rebrandet)
-//   - https://www.aidkick.app       → www-redirect (Firebase Hosting)
-//   - https://echolima-769c7.web.app → Firebase default-URL (backup)
-//   - http://localhost:*            → lokal udvikling (alle porte)
+//   - https://aidkick.app                     → primær web-URL (rebrandet)
+//   - https://www.aidkick.app                 → www-redirect (Firebase Hosting)
+//   - https://echolima-769c7.web.app          → Firebase default-URL (backup)
+//   - https://echolima-769c7.firebaseapp.com  → Firebase alt-URL (backup)
+//   - http://localhost:*                      → lokal udvikling (alle porte)
 //
 // Requests UDEN Origin-header (server-to-server, mobile apps, curl, Render
 // health-checks) tillades altid — CORS er kun en browser-protection-mekanisme.
 const allowedOrigins = new Set([
   'https://aidkick.app',
   'https://www.aidkick.app',
-  'https://echolima-769c7.web.app'
+  'https://echolima-769c7.web.app',
+  'https://echolima-769c7.firebaseapp.com'
 ])
 const localhostRegex = /^http:\/\/localhost(:\d+)?$/
 
