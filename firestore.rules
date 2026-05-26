@@ -95,5 +95,23 @@ service cloud.firestore {
     match /contact_requests/{requestId} {
       allow read, write, update, delete: if false;
     }
+
+    // ─── apps/{appId}/groups/{groupId} — Voice Intents V1.1 ───
+    // Hver bruger ejer sine egne grupper. ownerUid på doc bruges som access-check.
+    // System-grupper (default-gruppen oprettet af onUserCreated Cloud Function)
+    // kan ikke slettes eller modificeres af bruger — kun læses.
+    //
+    // Cloud Functions skriver via Admin SDK (bypasser disse rules) — så onUserCreated
+    // kan oprette system-gruppen selvom rules forbyder client-side create af system-grupper.
+    match /apps/{appId}/groups/{groupId} {
+      allow read: if request.auth != null
+        && resource.data.ownerUid == request.auth.uid;
+      allow create: if request.auth != null
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.isSystem == false;
+      allow update, delete: if request.auth != null
+        && resource.data.ownerUid == request.auth.uid
+        && resource.data.isSystem == false;
+    }
   }
 }

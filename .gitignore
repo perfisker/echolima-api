@@ -5,6 +5,9 @@ dist/
 !package.json
 !tsconfig.json
 !firebase.json
+!firestore.indexes.json
+firebase-debug.log
+firebase-debug.*.log
 
 # Sensitive — never commit (defensive patterns tilføjet 23. maj 2026)
 # Wildcard *.txt med eksplicit whitelist er stærkere end konkrete navne.

@@ -1,21 +1,16 @@
 import { Router, Response } from 'express'
 import multer from 'multer'
-import OpenAI, { toFile } from 'openai'
+import { toFile } from 'openai'
 import { getFirestore } from 'firebase-admin/firestore'
 import { AuthRequest, NicheDoc } from '../types'
 import { verifyToken } from '../middleware/auth'
+import { getOpenAI, callWithRetry } from '../utils/openai'
 
 const router = Router()
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024 } // 25 MB maks
 })
-
-function getOpenAI(): OpenAI {
-  const key = process.env.OPENAI_API_KEY
-  if (!key) throw new Error('OPENAI_API_KEY er ikke sat')
-  return new OpenAI({ apiKey: key })
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Niche-cache
@@ -315,38 +310,6 @@ function applyAnalysisDefaults(modelResponse: Record<string, any>): Record<strin
   modelResponse.follow_up_questions = ensureStringArray(modelResponse.follow_up_questions)
 
   return modelResponse
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Retry-logik til OpenAI rate limits
-//
-// Ved 429 (rate limit) venter vi eksponentielt og prøver igen.
-// Andre fejl kastes videre med det samme — ingen grund til at prøve igen.
-// Forsøg: 0 → vent 1s → forsøg 1 → vent 2s → forsøg 2 → vent 4s → kast fejl
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function callWithRetry<T>(
-  fn: () => Promise<T>,
-  maxRetries = 3
-): Promise<T> {
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      return await fn()
-    } catch (err: any) {
-      const isRateLimit =
-        err?.status === 429 ||
-        err?.message?.toLowerCase().includes('rate limit') ||
-        err?.message?.toLowerCase().includes('too many requests')
-
-      // Kast fejlen videre hvis det ikke er rate limit, eller vi har brugt alle forsøg
-      if (!isRateLimit || attempt === maxRetries - 1) throw err
-
-      const delayMs = Math.pow(2, attempt) * 1000  // 1s, 2s, 4s
-      console.warn(`OpenAI rate limit — venter ${delayMs}ms (forsøg ${attempt + 1}/${maxRetries})`)
-      await new Promise(resolve => setTimeout(resolve, delayMs))
-    }
-  }
-  throw new Error('Max retries exceeded')
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

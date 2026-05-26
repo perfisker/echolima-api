@@ -16,6 +16,7 @@ import stripeRoutes from './routes/stripe'
 import nichesRoutes from './routes/niches'
 import telemetryRoutes from './routes/telemetry'
 import contactRequestsRouter from './routes/contact_requests'
+import intentsRouter from './routes/intents'
 
 dotenv.config()
 
@@ -141,6 +142,9 @@ app.use('/telemetry', telemetryRoutes)
 // req/15min/IP) gælder også men det er det stramme contact-specifikke loft
 // der reelt beskytter mod spam.
 app.use('/contact_requests', contactRequestsRouter)
+// /intents/parse — Voice Intents V1.1+ NLU endpoint (autenticated).
+// Bruger generalLimiter (100 req/15min/IP) som rate-limit-beskyttelse.
+app.use('/intents', intentsRouter)
 
 // 404 — opdateret til struktureret error-format for konsistens med øvrige endpoints
 app.use((_, res) => {

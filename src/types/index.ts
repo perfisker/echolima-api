@@ -89,9 +89,9 @@ export interface NicheDoc {
 //   local_ui                   — Android åbner UI-handling (ingen round-trip)
 // ─────────────────────────────────────────────────────────────────────────────
 
-type LocalizedText = { da: string; en?: string }
-type LocalizedStringArray = { da: string[]; en?: string[] }
-type TierId = 'tier_free' | 'tier_basic' | 'tier_pro' | 'tier_unlimited'
+export type LocalizedText = { da: string; en?: string }
+export type LocalizedStringArray = { da: string[]; en?: string[] }
+export type TierId = 'tier_free' | 'tier_basic' | 'tier_pro' | 'tier_unlimited'
 
 // ─── ExtraField — schema-felt som prompten producerer ────────────────────────
 export interface ExtraFieldDef {
@@ -141,6 +141,7 @@ export interface MetadataFlagDef {
 export interface Capabilities {
   extraFields: ExtraFieldDef[]
   voiceCommands: VoiceCommandDef[]
+  intents?: IntentDef[]          // V1.1+. Optional for backward compat — gamle klienter (Gson) ignorerer stille.
   metadataFlags: MetadataFlagDef[]
 }
 
@@ -206,4 +207,91 @@ export interface ContactRequestDoc {
   notes?: string                // admin intern noter
   resolvedAt?: number
   resolvedBy?: string           // admin uid (når admin-flow bygges senere)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Voice Intent System (V1.1+)
+// Architecture-runde 22. maj 2026 — se EchoLima_Voice_Intents_Architecture.md
+// 11 beslutninger låst.
+//
+// Forskel fra VoiceCommand:
+//   VoiceCommand: Statiske params, instant dispatch, ingen NLU.
+//   Intent:       Bruger-leverede slots, evt. multi-turn ASK, preview-confirm,
+//                 NLU-kald.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type SlotType =
+  | 'string'         // fri tekst
+  | 'email'          // valideret email
+  | 'phone'          // valideret telefon
+  | 'contact_ref'    // lookup i kontaktbog — NLU returnerer navn, backend resolver email
+  | 'group_ref'      // lookup i grupper (V1.4+)
+  | 'recipient_ref'  // contact_ref ELLER group_ref (V1.4+)
+  | 'content_ref'    // reference til del af noten (se Architecture §2.8)
+  | 'boolean'
+  | 'number'
+
+export type ExtractionStrategy =
+  | 'continuation'   // regex på næste ord efter trigger (klient-side, gratis)
+  | 'nlu'            // backend GPT-extraction (~$0.005/kald)
+  | 'hybrid'         // continuation først, NLU fallback hvis mangler/ambiguous
+
+export type MissingSlotStrategy =
+  | 'ask'            // multi-turn ASK-once (spørg brugeren én gang)
+  | 'use_default'    // brug default-værdien
+  | 'fail'           // afbryd med venlig fejl-besked
+
+export interface SlotDef {
+  id: string
+  type: SlotType
+  required: boolean
+  extract: ExtractionStrategy
+  if_missing?: MissingSlotStrategy
+  default?: unknown
+  validation?: {
+    pattern?: string   // regex for string-typer
+    min?: number
+    max?: number
+  }
+  description?: LocalizedText  // bruges i UI-prompts: "Hvad er Anders' email?"
+}
+
+export type IntentActionType =
+  | 'invoke_endpoint'       // backend-kald til allowlistet endpoint
+  | 'invoke_compose_email'  // specialiseret email-compose med content-refs
+  | 'invoke_local'          // lokal Android-handling (V1.x+)
+
+export type ConfirmationStrategy =
+  | 'preview_dialog'        // V1: vis preview, bruger godkender via knap
+  | 'silent_with_undo'      // V2: instant + undo-toast 5s
+  | 'voice_confirm'         // V2: "Skal jeg sende?" → "Ja"
+
+export interface IntentDef {
+  id: string
+  triggers: LocalizedStringArray
+  slots: SlotDef[]
+  extraction: ExtractionStrategy
+  action: {
+    type: IntentActionType
+    params: Record<string, unknown>
+  }
+  confirmation: ConfirmationStrategy
+  description?: LocalizedText
+  minTier?: TierId           // V1-intents bruger dette ikke — alle gratis
+  minClientVersion?: string
+}
+
+// ─── Groups (app-niveau, V1.1 infrastruktur — eksponeres i UI ved V1.4) ─────
+export interface GroupDoc {
+  id: string
+  appId: string
+  ownerUid: string
+  name: string
+  color?: string
+  icon?: string
+  isSystem: boolean
+  minTier: TierId
+  contactCount: number
+  createdAt: number
+  updatedAt: number
 }

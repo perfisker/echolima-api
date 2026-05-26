@@ -147,4 +147,139 @@ router.post('/capability_listed', verifyToken, async (req: AuthRequest, res: Res
   }
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Voice Intent Telemetri (V1.1+)
+// Architecture-doc §3 — adgang fra Android-WS' DraftIntent state machine.
+// Disse events bruges til at måle intent-success-rate, ASK-trigger-frekvens,
+// og at spotte ofte-fejlende intents der skal optimeres.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /telemetry/intent_invoked
+// Body: { intentId: string, success: boolean, durationMs?: number, clientVersion?: string }
+//
+// Logges når Android har færdig-håndteret en intent (uanset om POSTen til
+// allowlisted endpoint lykkedes). success=true betyder hele flow gennemførtes,
+// success=false betyder fejlede på et tidspunkt (typisk efter klient-confirm).
+router.post('/intent_invoked', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const uid = req.user!.uid
+    const { intentId, success, durationMs, clientVersion } = req.body
+
+    if (!intentId || typeof intentId !== 'string') {
+      res.status(400).json({ error: 'bad_request', message: 'intentId er påkrævet' })
+      return
+    }
+    if (typeof success !== 'boolean') {
+      res.status(400).json({ error: 'bad_request', message: 'success (boolean) er påkrævet' })
+      return
+    }
+
+    const event: Record<string, any> = {
+      uid,
+      appId: 'echolima',
+      type: 'capability_intent_invoked',
+      intentId,
+      success,
+      timestamp: Date.now()
+    }
+    if (typeof durationMs === 'number') event.durationMs = durationMs
+    if (typeof clientVersion === 'string') event.clientVersion = clientVersion
+
+    await getFirestore().collection('events').add(event)
+    res.json({ logged: true })
+  } catch (err) {
+    console.error('telemetry/intent_invoked fejl:', err)
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
+  }
+})
+
+// POST /telemetry/intent_failed
+// Body: { intentId: string, reason: string, missingSlots?: string[] }
+//
+// Logges når en intent ikke kunne gennemføres. Reason giver indsigt i HVOR
+// fejlen skete: parse_failed (NLU returnerede intet brugbart), missing_required
+// (ASK-pattern blev nødvendigt og fejlede), allowlist_violation (kompromitteret
+// config), validation_failed (slot-format ikke godkendt), rate_limited
+// (OpenAI rate limit), server_error (anden serverfejl).
+router.post('/intent_failed', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const uid = req.user!.uid
+    const { intentId, reason, missingSlots } = req.body
+
+    if (!intentId || typeof intentId !== 'string') {
+      res.status(400).json({ error: 'bad_request', message: 'intentId er påkrævet' })
+      return
+    }
+
+    const VALID_REASONS = [
+      'parse_failed',
+      'missing_required',
+      'allowlist_violation',
+      'validation_failed',
+      'rate_limited',
+      'server_error'
+    ]
+    if (!reason || !VALID_REASONS.includes(reason)) {
+      res.status(400).json({
+        error: 'bad_request',
+        message: `reason skal være én af: ${VALID_REASONS.join(', ')}`
+      })
+      return
+    }
+
+    const event: Record<string, any> = {
+      uid,
+      appId: 'echolima',
+      type: 'capability_intent_failed',
+      intentId,
+      reason,
+      timestamp: Date.now()
+    }
+    if (Array.isArray(missingSlots)) {
+      event.missingSlots = missingSlots.filter(s => typeof s === 'string')
+    }
+
+    await getFirestore().collection('events').add(event)
+    res.json({ logged: true })
+  } catch (err) {
+    console.error('telemetry/intent_failed fejl:', err)
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
+  }
+})
+
+// POST /telemetry/intent_ask_triggered
+// Body: { intentId: string, askedSlot: string }
+//
+// Logges når multi-turn ASK-pattern aktiveres (et required slot mangler,
+// klient spørger brugeren). Giver indsigt i hvilke slots der ofte mangler
+// — kan informere NLU-prompt-forbedringer eller om vi skal lave default-værdier.
+router.post('/intent_ask_triggered', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const uid = req.user!.uid
+    const { intentId, askedSlot } = req.body
+
+    if (!intentId || typeof intentId !== 'string') {
+      res.status(400).json({ error: 'bad_request', message: 'intentId er påkrævet' })
+      return
+    }
+    if (!askedSlot || typeof askedSlot !== 'string') {
+      res.status(400).json({ error: 'bad_request', message: 'askedSlot er påkrævet' })
+      return
+    }
+
+    await getFirestore().collection('events').add({
+      uid,
+      appId: 'echolima',
+      type: 'capability_intent_ask_triggered',
+      intentId,
+      askedSlot,
+      timestamp: Date.now()
+    })
+    res.json({ logged: true })
+  } catch (err) {
+    console.error('telemetry/intent_ask_triggered fejl:', err)
+    res.status(500).json({ error: 'server_error', message: 'Serverfejl' })
+  }
+})
+
 export default router

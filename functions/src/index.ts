@@ -384,5 +384,77 @@ export const onUserDelete = authV1.user().onDelete(async (user) => {
     logger.info(`[onUserDelete] Springer contact_requests-anonymisering over for ${uid} (ingen email fundet)`)
   }
 
+  // ─── 5. Slet brugerens groups (V1.1 Voice Intents infrastructure) ───
+  // Groups lever som subcollection af apps/{appId}/groups med ownerUid-felt.
+  // collectionGroup('groups') querier på tværs af alle apps og finder match.
+  // KRÆVER Firestore composite index: collectionGroup='groups', field='ownerUid' (ASC).
+  // Indexet skal eksistere før onUserDelete kan køre — se firestore.indexes.json
+  // og deploy-plan.
+  try {
+    const groupsSnap = await db.collectionGroup('groups')
+      .where('ownerUid', '==', uid)
+      .get()
+    if (!groupsSnap.empty) {
+      const batch = db.batch()
+      groupsSnap.docs.forEach(doc => batch.delete(doc.ref))
+      await batch.commit()
+      logger.info(`[onUserDelete] Groups slettet: ${groupsSnap.size} for ${uid}`)
+    }
+  } catch (err) {
+    logger.error(`[onUserDelete] Groups-cleanup fejlede for ${uid}:`, err)
+  }
+
   logger.info(`[onUserDelete] Cleanup gennemført for uid=${uid}`)
+})
+
+/**
+ * Auto-opret default-gruppe ved Auth user-creation (V1.1 Voice Intents).
+ *
+ * Architecture-doc §2.x: brugere har en system-gruppe "Default" som de ikke kan
+ * slette. Den oprettes ved første Auth-signup så create_contact-intent kan
+ * referere til den via ${default_group_id}-placeholder (substitueres klient-side).
+ *
+ * Cacher group-ID på user-doc som defaultGroupId så klienten kan slå den op
+ * uden at lave en collectionGroup-query ved hver create_contact.
+ *
+ * Som onUserDelete bruger denne v1 Auth-trigger der deployer kun til us-central1.
+ * Cross-region Firestore-skrivning til europe-west1 koster ~50ms ekstra latency
+ * — ikke et issue for one-time-per-bruger setup-flow.
+ */
+export const onUserCreated = authV1.user().onCreate(async (user) => {
+  const uid = user.uid
+  logger.info(`[onUserCreated] Setup startet for uid=${uid}`)
+
+  try {
+    // Auto-generated doc-ID under apps/echolima/groups
+    const defaultGroupRef = db
+      .collection('apps').doc(APP_ID)
+      .collection('groups').doc()
+
+    const now = Date.now()
+    await defaultGroupRef.set({
+      id: defaultGroupRef.id,
+      appId: APP_ID,
+      ownerUid: uid,
+      name: 'Default',
+      isSystem: true,           // kan ikke slettes af bruger (Firestore Rules tjekker dette)
+      minTier: 'tier_free',
+      contactCount: 0,
+      createdAt: now,
+      updatedAt: now
+    })
+
+    // Cache group-ID på user-doc så klient ikke skal querye for at finde sin
+    // egen default-gruppe. Bruger merge: true så vi ikke overskriver eksisterende
+    // user-felter hvis user-doc allerede er initialiseret af /auth/sync-flow.
+    await db.collection('users').doc(uid).set({
+      defaultGroupId: defaultGroupRef.id
+    }, { merge: true })
+
+    logger.info(`[onUserCreated] Default-gruppe oprettet: ${defaultGroupRef.id} for ${uid}`)
+  } catch (err) {
+    logger.error(`[onUserCreated] Setup fejlede for ${uid}:`, err)
+    // Vi kaster ikke videre — Auth-bruger er allerede oprettet og vi vil ikke
+    // blokere login. /auth/sync kan reparere defaultGroupId senere hvis nødvendigt.
+  }
 })
