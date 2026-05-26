@@ -1,42 +1,78 @@
 rules_version = '2';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EchoLima Firestore Security Rules
+// EchoLima/AidKick Firestore Security Rules
 //
 // HISTORIK:
 //   23. maj 2026 v1 — Architecture-WS security cleanup. KUN events-regel.
-//                     → BLOKKEDE alt andet (default-deny på rules_version='2').
-//                     → Android-klient mistede adgang til notes/contacts/tags/user-doc.
-//   23. maj 2026 v2 — Emergency rollback: permissiv fallback for authenticated
-//                     users + bevarer events-constraint. Restorer service.
-//                     Skal erstattes af eksplicitte per-collection rules i V1.1.
+//                     → Default-deny på rules_version='2' BLOKKEDE alt andet.
+//                     → Android-klient mistede adgang til notes/contacts/tags.
+//   23. maj 2026 v2 — Emergency rollback: permissive wildcard fallback.
+//                     Restorede service men gjorde events-deny ineffektiv.
+//   25. maj 2026 v3 — Eksplicitte per-collection rules (denne version).
+//                     Wildcard fjernet. Sikkerheds-deny på contact_requests
+//                     virker nu reelt (ikke kun "spec-intent").
 //
-// AKTUEL POLICY (v2 — midlertidig):
-//   - Alle authenticated users kan læse/skrive ALT (matcher pre-23-maj-state)
-//   - Events-collection har strikt anti-spoofing rule (uid + felt-validering)
-//   - Update/delete på events er forbudt (immutable)
+// PRINCIPPER:
+//   - Bruger-data (users/{uid}/...) → kun ejer kan læse/skrive
+//   - Server-controlled public data (tiers, niches, apps) → auth read, no write
+//   - Strikt validerede collections (events) → anti-spoofing constraints
+//   - Backend-only collections (contact_requests, feedback) → client locked out
 //
-// NÆSTE SKRIDT (V1.1):
-//   Skriv eksplicitte rules for hver collection:
-//   - users/{uid}/...           → only owner
-//   - users/{uid}/notes/{id}    → only owner
-//   - users/{uid}/contacts/{id} → only owner
-//   - users/{uid}/tags/{id}     → only owner
-//   - notes/{id} (hvis root)    → check ownerUid felt
-//   - niches/{id}, apps/{id},
-//     tiers/{id}                → read-only for auth, write backend-only
-//   - contact_requests/{id}     → write open, read backend-only
-//   - feedback/{id}             → write open, read backend-only
+// ADVARSEL: Hvis Android- eller Web-klient skriver til en collection der ikke
+// er nævnt nedenfor, vil rules afvise. Test efter deploy ved at logge ind +
+// åbne hver app-fane. Hvis "data væk"-symptom dukker op igen, find hvilken
+// collection klienten rammer i Firebase Console → Rules-fanen → simulator,
+// og tilføj eksplicit allow-regel her.
 // ─────────────────────────────────────────────────────────────────────────────
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ─── Events-collection (strikt — anti-spoofing) ───
-    // Sikkerheds-mæssigt vigtigste collection: telemetri + AI-events der
-    // bruges til billing/usage-tracking. Strikt validering på create.
-    // Backend skriver via Admin SDK (bypasser rules). Klient må kun skrive
-    // egne events med korrekt skema.
+    // ─── users/{uid} — bruger-doc (profil + tier-cache) ───
+    // Læses af bruger til at vise egen profil + tier. Skrives af backend via
+    // Admin SDK (auth/sync, stripe webhook, etc.) som bypasser disse rules.
+    // Client kan også skrive til sin egen — bruges fx til lastSeen-update.
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // ─── users/{uid}/{document=**} — sub-collections (usage, notes, contacts, tags, archive, etc.) ───
+    // Catch-all under user. Dækker alle nuværende OG fremtidige sub-collections
+    // brugeren ejer. Kun ejer kan læse/skrive — andre brugere kan ikke se
+    // hinandens noter/kontakter/tags.
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // ─── tiers/{tierId} — pris og limits-katalog ───
+    // Public read for authenticated klienter (Android viser tier-grænser,
+    // Web viser priser i upgrade.html). Skrives KUN via seedTiers.ts (backend).
+    match /tiers/{tierId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // ─── niches/{nicheId} — niche-katalog (prompts excluded fra REST-respons) ───
+    // Public read for authenticated klienter. Skrives KUN via seedNiches.ts.
+    // Bemærk: capabilities-feltet eksponeres via GET /niches, ikke direct read.
+    match /niches/{nicheId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // ─── apps/{appId} — app-niveau capabilities + branding ───
+    // Public read for authenticated. Skrives KUN via seedApps.ts.
+    match /apps/{appId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // ─── events/{eventId} — telemetri + AI-events (strikt anti-spoofing) ───
+    // Backend skriver via Admin SDK (ai.ts, telemetry.ts).
+    // Hvis klient skriver direct: kræver uid + type + timestamp og uid
+    // skal matche request.auth.uid. Forhindrer cross-user event-spoofing.
+    // Bruges til billing/usage-tracking — derfor immutable (no update/delete).
     match /events/{eventId} {
       allow read: if request.auth != null
         && resource.data.uid == request.auth.uid;
@@ -49,14 +85,15 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // ─── MIDLERTIDIG FALLBACK: alle authenticated users kan læse/skrive ───
-    // Skal erstattes af eksplicitte per-collection rules i V1.1.
-    // Denne regel matcher kun docs der IKKE allerede er dækket af mere
-    // specifikke regler (Firestore evaluerer specifik-først; events får
-    // sin egen behandling fordi /events/{eventId} er mere specifik end
-    // wildcard).
-    match /{document=**} {
-      allow read, write: if request.auth != null;
+    // ─── contact_requests/{requestId} — backend-only kontakt-formular ───
+    // POST /contact_requests skriver via Admin SDK (bypasser disse rules).
+    // INGEN client-side adgang — hverken read/write/update/delete. Forhindrer
+    // at brugere kan se hinandens kontakt-data via Firebase Web SDK.
+    //
+    // Senere når admin-UI bygges (custom claim 'admin' eller email-allowlist):
+    //   allow read, update: if request.auth.token.admin == true
+    match /contact_requests/{requestId} {
+      allow read, write, update, delete: if false;
     }
   }
 }

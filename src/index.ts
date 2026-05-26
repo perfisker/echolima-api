@@ -15,6 +15,7 @@ import emailRoutes from './routes/email'
 import stripeRoutes from './routes/stripe'
 import nichesRoutes from './routes/niches'
 import telemetryRoutes from './routes/telemetry'
+import contactRequestsRouter from './routes/contact_requests'
 
 dotenv.config()
 
@@ -135,6 +136,11 @@ app.use('/email', emailRoutes)
 app.use('/stripe', stripeRoutes)
 app.use('/niches', nichesRoutes)
 app.use('/telemetry', telemetryRoutes)
+// /contact_requests er PUBLIC (ingen verifyToken) med egne to-lags rate-limits
+// (5/IP/time + 20/IP/dag) defineret i contact_requests.ts. generalLimiter (100
+// req/15min/IP) gælder også men det er det stramme contact-specifikke loft
+// der reelt beskytter mod spam.
+app.use('/contact_requests', contactRequestsRouter)
 
 // 404 — opdateret til struktureret error-format for konsistens med øvrige endpoints
 app.use((_, res) => {

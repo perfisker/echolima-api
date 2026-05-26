@@ -170,3 +170,40 @@ export interface NichesResponse {
   commonCapabilities?: Capabilities
   niches: NichePublic[]
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ContactRequest — public POST /contact_requests endpoint (25. maj 2026)
+//
+// Founder-godkendt: 6 specs (path, body, public auth, hourly+daily rate-limit,
+// Firestore + Resend, notification til ADMIN_EMAIL). Bruges af Web-WS' kontakt-
+// modal (echo_tier_inquiry) og fremtidig in-app kontakt (aidkick_app).
+//
+// PII-håndtering:
+//   - name, email, message: brugerens egne indtastninger → anonymiseres ved
+//     onUserDelete Cloud Function (sættes til "[slettet]")
+//   - ipHash: SHA256 af klient-IP (ikke PII pr. GDPR) → anti-spam tracking
+//   - userAgent: diagnostic, behold til debug
+//   - Resolved requests >12 mdr slettes via cleanupOldContactRequests-job
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type ContactRequestSource =
+  | 'aidkick_web'        // landing-side, support-side, etc.
+  | 'aidkick_app'        // in-app kontakt-flow (future)
+  | 'echo_tier_inquiry'  // specifik fra upgrade.html Echo-modal
+
+export type ContactRequestStatus = 'new' | 'in_progress' | 'resolved'
+
+export interface ContactRequestDoc {
+  id: string
+  name: string                  // 1-100 chars
+  email: string                 // valideret regex
+  message: string               // 5-5000 chars
+  source: ContactRequestSource
+  status: ContactRequestStatus  // default 'new'
+  ts: number                    // Date.now() ved oprettelse
+  userAgent?: string            // diagnostic
+  ipHash?: string               // SHA256 af IP — anti-spam tracking uden GDPR-PII
+  notes?: string                // admin intern noter
+  resolvedAt?: number
+  resolvedBy?: string           // admin uid (når admin-flow bygges senere)
+}

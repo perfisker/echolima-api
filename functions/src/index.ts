@@ -209,6 +209,58 @@ export const reconcileStorageUsage = onSchedule(
 )
 
 /**
+ * Månedlig auto-cleanup af gamle, resolved contact_requests (12 mdr retention).
+ *
+ * Founder-godkendt 25. maj 2026 som del af GDPR-data-minimisering. Vi sletter
+ * KUN dokumenter med status='resolved' — åbne 'new'/'in_progress' requests
+ * bevares uanset alder så support ikke mister overblik.
+ *
+ * Schedule: 04:00 UTC den første dag i hver måned (lavt traffic-vindue).
+ * Pagineret med 500-doc batches for at undgå Firestore's batch-grænse.
+ *
+ * Bemærk: anonymisering ved user-deletion (onUserDelete trin 4) er en
+ * SEPARAT mekanisme. Denne cleanup sletter også anonymiserede docs hvis de
+ * når 12-mdr-grænsen, men kun hvis status er 'resolved'.
+ */
+export const cleanupOldContactRequests = onSchedule(
+  {
+    schedule: '0 4 1 * *',  // første dag i måneden kl. 04:00 UTC
+    region: REGION,
+    timeZone: 'UTC',
+    timeoutSeconds: 300,
+    memory: '256MiB'
+  },
+  async () => {
+    const cutoff = Date.now() - (365 * 24 * 60 * 60 * 1000)  // 12 måneder
+    const reqRef = db.collection('contact_requests')
+
+    let totalDeleted = 0
+    while (true) {
+      const snap = await reqRef
+        .where('ts', '<', cutoff)
+        .where('status', '==', 'resolved')
+        .limit(500)
+        .get()
+      if (snap.empty) break
+
+      const batch = db.batch()
+      snap.docs.forEach(doc => batch.delete(doc.ref))
+      await batch.commit()
+      totalDeleted += snap.size
+
+      // Hvis vi fik mindre end max-batch-size, er der ikke flere → stop
+      if (snap.size < 500) break
+    }
+
+    if (totalDeleted === 0) {
+      logger.info('cleanupOldContactRequests: no old resolved requests')
+    } else {
+      logger.info(`cleanupOldContactRequests: deleted ${totalDeleted} old resolved requests`)
+    }
+  }
+)
+
+/**
  * GDPR cascade-cleanup ved Auth user-deletion.
  *
  * Fyrer når en Firebase Auth-bruger slettes via "Slet konto og alle data"-
@@ -239,6 +291,21 @@ export const onUserDelete = authV1.user().onDelete(async (user) => {
 
   const db = getFirestore()
   const bucket = getStorage().bucket()
+
+  // ─── 0. Hent user email FØR vi sletter user-doc'et ───
+  // Bruges senere (step 4) til at anonymisere matching contact_requests.
+  // Hvis user-doc ikke findes (allerede slettet manuelt?), fortsætter vi
+  // alligevel — bare uden contact_requests-anonymisering.
+  let userEmail: string | null = null
+  try {
+    const userSnap = await db.collection('users').doc(uid).get()
+    const email = userSnap.data()?.email
+    if (typeof email === 'string' && email.length > 0) {
+      userEmail = email.toLowerCase()
+    }
+  } catch (err) {
+    logger.warn(`[onUserDelete] Kunne ikke hente user email for ${uid}:`, err)
+  }
 
   // ─── 1. Slet Storage-filer på tværs af alle USER_PATH_PREFIXES parallelt ───
   // Promise.allSettled fortsætter med resten hvis én prefix fejler. Hver
@@ -283,6 +350,38 @@ export const onUserDelete = authV1.user().onDelete(async (user) => {
     logger.info(`[onUserDelete] Events slettet: ${deletedEvents} for ${uid}`)
   } catch (err) {
     logger.error(`[onUserDelete] Events-cleanup fejlede for ${uid}:`, err)
+  }
+
+  // ─── 4. Anonymisér contact_requests med matching email (GDPR) ───
+  // Vi ANONYMISERER (sætter name/email til '[slettet]') i stedet for at slette
+  // af to grunde:
+  //   (a) bevarer anti-spam-data (ipHash + ts) så vi kan se mønstre over tid
+  //   (b) bevarer audit-trail af kommunikation
+  // Resolved requests > 12 mdr ryddes alligevel via cleanupOldContactRequests
+  // scheduled function.
+  if (userEmail) {
+    try {
+      const reqRef = db.collection('contact_requests').where('email', '==', userEmail)
+      let anonymized = 0
+      while (true) {
+        const snap = await reqRef.limit(500).get()
+        if (snap.empty) break
+        const batch = db.batch()
+        snap.docs.forEach(doc => batch.update(doc.ref, {
+          name: '[slettet]',
+          email: '[slettet]'
+          // Behold: message, source, ts, status, ipHash, userAgent, notes
+        }))
+        await batch.commit()
+        anonymized += snap.size
+        if (snap.size < 500) break
+      }
+      logger.info(`[onUserDelete] contact_requests anonymiseret: ${anonymized} for ${uid} (email=${userEmail})`)
+    } catch (err) {
+      logger.error(`[onUserDelete] contact_requests anonymisering fejlede for ${uid}:`, err)
+    }
+  } else {
+    logger.info(`[onUserDelete] Springer contact_requests-anonymisering over for ${uid} (ingen email fundet)`)
   }
 
   logger.info(`[onUserDelete] Cleanup gennemført for uid=${uid}`)
