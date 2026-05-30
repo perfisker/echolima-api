@@ -95,7 +95,21 @@ router.post('/parse', verifyToken, async (req: AuthRequest, res: Response) => {
     })
 
     // ── 5. Build NLU-prompt + kald GPT-4o-mini med retry ──
-    const nluPrompt = buildNluPrompt(intentDef, transcript, contacts, noteContext)
+    // V1.3 (30. maj 2026): Defensiv parsing af noteContext for at sikre at
+    // klient-supplied data altid har korrekte typer før vi sender til NLU.
+    // Beskytter mod malformed body fra ældre/nyere klient-versioner.
+    const rawCtx = noteContext as Record<string, unknown> | undefined
+    const safeNoteContext = rawCtx ? {
+      tasks: Array.isArray(rawCtx.tasks)
+        ? (rawCtx.tasks as unknown[]).filter((t): t is string => typeof t === 'string')
+        : undefined,
+      summary: typeof rawCtx.summary === 'string' ? rawCtx.summary : undefined,
+      extraFieldNames: Array.isArray(rawCtx.extraFieldNames)
+        ? (rawCtx.extraFieldNames as unknown[]).filter((n): n is string => typeof n === 'string')
+        : undefined
+    } : undefined
+
+    const nluPrompt = buildNluPrompt(intentDef, transcript, contacts, safeNoteContext)
     const openai = getOpenAI()
 
     const completion = await callWithRetry(() =>

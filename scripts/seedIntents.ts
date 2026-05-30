@@ -125,6 +125,61 @@ const v1Intents: IntentDef[] = [
       da: 'Opret en ny kontakt i din kontaktbog',
       en: 'Create a new contact'
     }
+  },
+
+  // ─── send_email — V1.3 ──────────────────────────────────────────────────────
+  // Email-compose med NLU-extracted recipient + content_ref.
+  //
+  // recipient_ref: modtagerens navn (NLU). Backend resolver til email via
+  //   users/{uid}/contacts case-insensitive name-match. Hvis recipient_ref
+  //   tilfældigvis ER en email, sendes der direkte til den (defensiv fallback).
+  //
+  // content_ref: union 'all' | 'summary' | number[] | <extraFieldId>
+  //   Android sender noteContent med noten — backend bygger email-body ud fra
+  //   content_ref. Default = 'all' hvis intet nævnes (se NLU few-shot eksempel 4).
+  //
+  // ${default_group_id} bruges IKKE her — sender til specifik kontakt, ikke gruppe.
+  {
+    id: 'send_email',
+    triggers: {
+      da: ['send email', 'send noter', 'email til', 'send til', 'send resumé', 'mail til'],
+      en: ['send email', 'send notes', 'email to', 'send to']
+    },
+    slots: [
+      {
+        id: 'recipient_ref',
+        type: 'recipient_ref',
+        required: true,
+        extract: 'nlu',
+        if_missing: 'ask',
+        description: { da: 'modtageren (navn fra kontaktbog)', en: 'recipient (name from contacts)' }
+      },
+      {
+        id: 'content_ref',
+        type: 'content_ref',
+        required: false,
+        extract: 'nlu',
+        default: 'all',
+        description: { da: 'hvilken del af noten der sendes', en: 'which part of the note to send' }
+      }
+    ],
+    extraction: 'nlu',
+    action: {
+      type: 'invoke_endpoint',
+      params: {
+        endpoint: '/email/compose-send',
+        method: 'POST',
+        bodyTemplate: {
+          recipient_ref: '${recipient_ref}',
+          content_ref: '${content_ref}'
+        }
+      }
+    },
+    confirmation: 'preview_dialog',
+    description: {
+      da: 'Send noter eller resumé til en kontakt via email',
+      en: 'Send notes or summary to a contact by email'
+    }
   }
 ]
 
