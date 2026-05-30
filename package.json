@@ -9,7 +9,8 @@
     "dev": "ts-node-dev --respawn src/index.ts",
     "seed:niches": "npx ts-node scripts/seedNiches.ts",
     "seed:apps": "npx ts-node scripts/seedApps.ts",
-    "seed:intents": "npx ts-node scripts/seedIntents.ts"
+    "seed:intents": "npx ts-node scripts/seedIntents.ts",
+    "backfill:default-groups": "npx ts-node scripts/backfillDefaultGroups.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
