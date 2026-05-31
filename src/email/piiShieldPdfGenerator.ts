@@ -90,7 +90,7 @@ export async function generatePiiShieldPdf(data: PiiShieldData): Promise<Buffer>
         const countStr = count !== undefined
           ? ` (${count} ${count === 1 ? 'forekomst' : 'forekomster'})`
           : ''
-        doc.text(`  ✓  ${label}${countStr}`)
+        doc.text(`  •  ${label}${countStr}`)
       }
     }
     doc.moveDown()
