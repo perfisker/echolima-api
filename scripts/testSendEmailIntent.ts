@@ -121,6 +121,8 @@ async function main() {
   // Quickfix-verifikation: content_ref skal være "deltagere", ikke "all"
   const passed = contentRef === 'deltagere'
 
+  // Konvertér undefined til null så Firestore accepterer skrivningen
+  // (missingRequired-slots vil naturligt være undefined i response).
   await testDocRef.set({
     testName: 'v1.3_send_email_content_ref_quickfix',
     runAt: Date.now(),
@@ -134,8 +136,8 @@ async function main() {
     },
     verification: {
       expectedContentRef: 'deltagere',
-      actualContentRef: contentRef,
-      recipientRef,
+      actualContentRef: contentRef ?? null,
+      recipientRef: recipientRef ?? null,
       passed
     }
   })
