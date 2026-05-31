@@ -98,15 +98,36 @@ router.post('/parse', verifyToken, async (req: AuthRequest, res: Response) => {
     // V1.3 (30. maj 2026): Defensiv parsing af noteContext for at sikre at
     // klient-supplied data altid har korrekte typer før vi sender til NLU.
     // Beskytter mod malformed body fra ældre/nyere klient-versioner.
+    //
+    // V1.3 quickfix (31. maj 2026): App-WS sender noteContext.extraFields
+    // (object med values) men backend forventede extraFieldNames (array).
+    // Mismatch betød NLU-prompt fik INGEN extraField-context → GPT-4o så
+    // aldrig at "deltagere" var et valid content_ref-felt → fallback til "all".
+    //
+    // Fix: hvis extraFieldNames mangler men extraFields-object er til stede,
+    // udled keys fra det. Klienten kan sende ENTEN format — vi normaliserer
+    // her til ét internt format buildNluPrompt arbejder med.
     const rawCtx = noteContext as Record<string, unknown> | undefined
+
+    // Derive extraFieldNames: foretrækker eksplicit array hvis sendt,
+    // ellers afled fra extraFields-objekt-keys
+    let derivedExtraFieldNames: string[] | undefined
+    if (Array.isArray(rawCtx?.extraFieldNames)) {
+      derivedExtraFieldNames = (rawCtx!.extraFieldNames as unknown[])
+        .filter((n): n is string => typeof n === 'string')
+    } else if (rawCtx?.extraFields
+        && typeof rawCtx.extraFields === 'object'
+        && !Array.isArray(rawCtx.extraFields)) {
+      derivedExtraFieldNames = Object.keys(rawCtx.extraFields as Record<string, unknown>)
+        .filter(k => typeof k === 'string')
+    }
+
     const safeNoteContext = rawCtx ? {
       tasks: Array.isArray(rawCtx.tasks)
         ? (rawCtx.tasks as unknown[]).filter((t): t is string => typeof t === 'string')
         : undefined,
       summary: typeof rawCtx.summary === 'string' ? rawCtx.summary : undefined,
-      extraFieldNames: Array.isArray(rawCtx.extraFieldNames)
-        ? (rawCtx.extraFieldNames as unknown[]).filter((n): n is string => typeof n === 'string')
-        : undefined
+      extraFieldNames: derivedExtraFieldNames
     } : undefined
 
     const nluPrompt = buildNluPrompt(intentDef, transcript, contacts, safeNoteContext)
