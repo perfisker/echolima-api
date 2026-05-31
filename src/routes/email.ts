@@ -3,6 +3,7 @@ import { Resend } from 'resend'
 import { getFirestore } from 'firebase-admin/firestore'
 import { AuthRequest } from '../types'
 import { verifyToken } from '../middleware/auth'
+import { generatePiiShieldPdf, slugifyForFilename } from '../email/piiShieldPdfGenerator'
 
 const router = Router()
 
@@ -38,11 +39,27 @@ function getFromAddress(): string {
 //   subject: string,
 //   html?: string,
 //   text?: string,
-//   attachments?: Array<{ filename: string, content: string /* base64 */ }>
+//   attachments?: Array<{ filename: string, content: string /* base64 */ }>,
+//
+//   // V1.4 PiiShield-felter (alle optional, backward-compat):
+//   attach_pii_shield?: boolean              — generér og vedhæft GDPR-audit-PDF
+//   pii_types?: string[]                     — fx ['email', 'phone', 'cpr', 'name']
+//   noteTitle?: string                       — bruges i filnavn + PDF-header
+//   pii_instance_counts?: Record<string,number>  — pr. type count til PDF
+//   pii_detection_method?: string            — fx "regex+nlu"
+//   pii_detection_confidence?: string        — fx "high" / "medium"
 // }
+//
+// V1.4 (1. juni 2026): PiiShield-PDF-generation flyttet ind i /email/send fra
+// nedlagt /email/compose-send-flow. Felter er additive — klienter der ikke
+// sender dem får samme adfærd som før.
 router.post('/send', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { to, subject, html, text, attachments } = req.body
+    const {
+      to, subject, html, text, attachments,
+      attach_pii_shield, pii_types, noteTitle,
+      pii_instance_counts, pii_detection_method, pii_detection_confidence
+    } = req.body
 
     if (!to || !subject) {
       res.status(400).json({ error: 'Mangler "to" eller "subject"' })
@@ -54,12 +71,69 @@ router.post('/send', verifyToken, async (req: AuthRequest, res: Response) => {
     // Resend kræver at html eller text altid er til stede (ikke bare optionelt)
     const resolvedHtml: string = html ?? (text ? `<pre style="font-family:sans-serif">${text}</pre>` : '<p></p>')
 
-    const resolvedAttachments = (attachments && Array.isArray(attachments) && attachments.length > 0)
+    // Klient-sendte attachments (base64-decoded)
+    const clientAttachments = (attachments && Array.isArray(attachments) && attachments.length > 0)
       ? attachments.map((a: { filename: string; content: string }) => ({
           filename: a.filename,
           content: Buffer.from(a.content, 'base64')
         }))
-      : undefined
+      : []
+
+    // ── V1.4: PiiShield PDF-attachment-generation ──
+    // Kun hvis klient eksplicit sætter attach_pii_shield=true OG sender pii_types.
+    // Hvis PDF-generering fejler, fortsætter vi uden attachment — email skal stadig
+    // sendes. PII-PDF er audit-tråd, ikke kritisk for funktionalitet.
+    const finalAttachments: Array<{ filename: string; content: Buffer }> = [...clientAttachments]
+
+    if (attach_pii_shield === true && Array.isArray(pii_types) && pii_types.length > 0) {
+      try {
+        const toArray = Array.isArray(to) ? to : [to]
+        const recipientEmail = toArray[0] ?? 'ukendt'
+        const senderEmail = req.user?.email ?? 'ukendt'
+
+        const filteredPiiTypes = (pii_types as unknown[])
+          .filter((t): t is string => typeof t === 'string')
+
+        const safeInstanceCounts = (pii_instance_counts && typeof pii_instance_counts === 'object')
+          ? pii_instance_counts as Record<string, number>
+          : undefined
+
+        const pdfBuffer = await generatePiiShieldPdf({
+          noteTitle: typeof noteTitle === 'string' && noteTitle.length > 0 ? noteTitle : 'Uden titel',
+          senderEmail,
+          recipientEmail,
+          sentAt: Date.now(),
+          piiTypes: filteredPiiTypes,
+          instanceCounts: safeInstanceCounts,
+          detectionMethod: typeof pii_detection_method === 'string' ? pii_detection_method : undefined,
+          detectionConfidence: typeof pii_detection_confidence === 'string' ? pii_detection_confidence : undefined
+        })
+
+        const dateStr = new Date().toISOString().split('T')[0]
+        const slug = slugifyForFilename(typeof noteTitle === 'string' ? noteTitle : '')
+        const filename = `PiiShield_${slug}_${dateStr}.pdf`
+
+        finalAttachments.push({ filename, content: pdfBuffer })
+
+        // Telemetri (best-effort — failure her må ikke blokere email-send)
+        try {
+          await getFirestore().collection('events').add({
+            uid: req.user!.uid,
+            appId: 'echolima',
+            type: 'pii_shield_attached',
+            recipientEmail,
+            piiTypes: filteredPiiTypes,
+            piiTypeCount: filteredPiiTypes.length,
+            timestamp: Date.now()
+          })
+        } catch (logErr) {
+          console.error('email/send: pii_shield_attached event-log fejlede:', logErr)
+        }
+      } catch (pdfErr) {
+        console.error('email/send: PiiShield PDF-generering fejlede — sender uden attachment:', pdfErr)
+        // Continue uden attachment så email stadig sendes
+      }
+    }
 
     const result = await resend.emails.send({
       from: getFromAddress(),
@@ -67,7 +141,7 @@ router.post('/send', verifyToken, async (req: AuthRequest, res: Response) => {
       subject,
       html: resolvedHtml,
       ...(text ? { text } : {}),
-      ...(resolvedAttachments ? { attachments: resolvedAttachments } : {})
+      ...(finalAttachments.length > 0 ? { attachments: finalAttachments } : {})
     })
 
     if (result.error) {
@@ -110,6 +184,21 @@ router.post('/send', verifyToken, async (req: AuthRequest, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/compose-send', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
+    // ── V1.4 DEPRECATION (1. juni 2026) ──
+    // Architecture-WS besluttede at slå PiiShield ind i /email/send + slette
+    // /email/compose-send. Grace-window: vi beholder route'en funktionel indtil
+    // App-WS har deployet 1-linje fix der opdaterer ActionDispatcher's special-
+    // case fra /email/compose-send → /email/send. Slettes når Android-flåden
+    // er fuldt migreret (~1 uge efter App-WS deploy bekræftet).
+    //
+    // Body-shape er forskellig fra /email/send (recipient_ref + content_ref vs.
+    // to + subject + html), så simpel URL-rewrite ville bryde gamle klienter.
+    // Vi beholder fuld funktionalitet her og lader klient-side dirigere til /send.
+    console.warn(
+      `[deprecated] /email/compose-send kaldt af uid=${req.user?.uid} — ` +
+      'route slettes når App-WS har migreret. Brug /email/send fremover.'
+    )
+
     const uid = req.user!.uid
     const { recipient_ref, content_ref, noteContent } = req.body
 

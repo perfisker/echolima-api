@@ -167,9 +167,18 @@ const v1Intents: IntentDef[] = [
     action: {
       type: 'invoke_endpoint',
       params: {
-        endpoint: '/email/compose-send',
+        // V1.4 (1. juni 2026): Endpoint flyttet fra /email/compose-send til
+        // /email/send. App-WS bygger nu request-body direkte klient-side med
+        // HTML-template + to/subject + attach_pii_shield/pii_types. backend's
+        // bodyTemplate-substitution er reduceret til ren pass-through.
+        // Se EchoLima_Voice_Intents_Architecture.md §6.4 for designet.
+        endpoint: '/email/send',
         method: 'POST',
         bodyTemplate: {
+          // bodyTemplate beholdes som dokumentations-skelet — App-WS sender
+          // direkte til /email/send med fuld body-shape (to, subject, html,
+          // attach_pii_shield, pii_types). Disse placeholders bruges af
+          // klient-side template-substitution.
           recipient_ref: '${recipient_ref}',
           content_ref: '${content_ref}'
         }
