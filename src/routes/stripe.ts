@@ -375,19 +375,74 @@ router.post('/webhook', async (req: Request, res: Response) => {
         const sub = invoice.subscription
         if (!sub || typeof sub !== 'string') break
 
-        const stripe = getStripe()
-        const subscription = await stripe.subscriptions.retrieve(sub)
-        const uid     = subscription.metadata?.uid
-        const priceId = subscription.items.data[0]?.price?.id
-        const tierId  = priceId ? getTierIdFromPriceId(priceId) : subscription.metadata?.tierId
-        const periodEnd = getPeriodEnd(subscription)  // ← bruger sikker hjælpefunktion
+        // ─── V1.4 hotfix (1. juni 2026) — flere ændringer for at fixe ───
+        // launch-bug hvor brugere ikke fik counters nulstillet på fornyelse:
+        //
+        //   1. UID-resolver: subscription.metadata?.uid kan være undefined
+        //      hvis abonnementet er blevet modificeret via Customer Portal
+        //      (downgrade/upgrade kan miste metadata). Fall back til Firestore-
+        //      lookup via stripeCustomerId hvis metadata.uid mangler.
+        //
+        //   2. Counter-reset komplet: tilføjet voiceNotes + cameraNotes til
+        //      reset-listen. Counter-refactor (20. maj 2026) introducerede
+        //      brugervendte counters men opdaterede ikke denne handler →
+        //      brugere hittede limits permanent uden reset på renewal.
+        //
+        //   3. storageBytes nulstilles IKKE — den ejes af Cloud Functions
+        //      (onStorageUpload/onStorageDelete) og afspejler faktisk
+        //      Storage-forbrug, ikke billing-cycle.
+        //
+        //   4. Try/catch så vi altid logger fejl + returnerer 200 til Stripe
+        //      (ellers retrier de webhook'en evigt).
+        //
+        //   5. Telemetri-event 'usage_reset_on_invoice' for audit + at kunne
+        //      bygge synthetic monitor senere.
 
-        if (uid && tierId) {
+        try {
+          const stripeClient = getStripe()
+          const subscription = await stripeClient.subscriptions.retrieve(sub)
+          const priceId = subscription.items.data[0]?.price?.id
+          const tierId = priceId ? getTierIdFromPriceId(priceId) : subscription.metadata?.tierId
+          const periodEnd = getPeriodEnd(subscription)
+
+          // ── UID-resolver: metadata først, derefter customer-id-lookup ──
+          let uid: string | undefined = subscription.metadata?.uid
+
+          if (!uid) {
+            const customerId = typeof subscription.customer === 'string'
+              ? subscription.customer
+              : subscription.customer?.id
+
+            if (customerId) {
+              const userSnap = await db.collection('users')
+                .where('stripeCustomerId', '==', customerId)
+                .limit(1)
+                .get()
+              if (!userSnap.empty) {
+                uid = userSnap.docs[0].id
+                console.warn(
+                  `[invoice.payment_succeeded] uid manglede i metadata, ` +
+                  `fundet via stripeCustomerId-lookup: ${uid}`
+                )
+              }
+            }
+          }
+
+          if (!uid || !tierId) {
+            console.warn(
+              `[invoice.payment_succeeded] kan ikke resolve uid/tierId — ` +
+              `uid=${uid}, tierId=${tierId}, invoice=${invoice.id}`
+            )
+            break
+          }
+
           // Bug A fix: hvis det allerførste touch er en fornyelse (sjældent men
           // muligt hvis checkout-eventet droppede), initialisér doc fuldt først.
           await ensureUserDocInitialized(uid)
 
           const now = Date.now()
+
+          // Opdatér user-doc med tier + period-end
           await db.collection('users').doc(uid).set(
             {
               tierId,
@@ -398,17 +453,54 @@ router.post('/webhook', async (req: Request, res: Response) => {
             },
             { merge: true }
           )
+
+          // Nulstil ALLE bruger-vendte + interne counters. storageBytes BEVARES.
           await db.collection('users').doc(uid)
             .collection('usage').doc('echolima').set(
               {
+                // Brugervendte counters (counter-refactor 20. maj 2026)
+                voiceNotes: 0,
+                cameraNotes: 0,
+                // Legacy/interne counters (bevares for at sikre ingen stale-state
+                // i caches eller event-aggregations)
                 transcriptions: 0,
                 visionCalls: 0,
                 aiSummaries: 0,
                 resetAt: now
+                // storageBytes: BEVARES — ejes af Cloud Functions, ikke billing-cycle
               },
               { merge: true }
             )
-          console.log(`Tier fornyet og forbrug nulstillet: ${uid} → ${tierId}`)
+
+          // Telemetri-event til audit + fremtidig synthetic monitor
+          try {
+            await db.collection('events').add({
+              uid,
+              appId: 'echolima',
+              type: 'usage_reset_on_invoice',
+              invoiceId: invoice.id,
+              amountPaid: invoice.amount_paid,
+              tierId,
+              timestamp: now
+            })
+          } catch (logErr) {
+            console.error(
+              `[invoice.payment_succeeded] event-log fejlede (reset gennemført alligevel):`,
+              logErr
+            )
+          }
+
+          console.log(
+            `[invoice.payment_succeeded] Tier fornyet og forbrug nulstillet: ` +
+            `uid=${uid} tier=${tierId} invoice=${invoice.id}`
+          )
+        } catch (err) {
+          console.error(
+            `[invoice.payment_succeeded] reset fejlede for invoice=${invoice.id}:`,
+            err
+          )
+          // Vi returnerer alligevel 200 til Stripe (sker via res.json længere nede)
+          // ellers retrier de webhook'en evigt → spammer logs uden at hjælpe
         }
         break
       }
