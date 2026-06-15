@@ -1,0 +1,74 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AidKick Firebase Storage Security Rules
+//
+// HISTORIK:
+//   ~marts 2026   v1 — singular path: images/{uid}/{noteId}.jpg
+//                       audio/{uid}/{noteId}.mp4
+//   Sprint C      v2 — multi-image refactor: images/{uid}/{noteId}/{index}.jpg
+//                       (audio uændret som singular)
+//                       MEN rules blev IKKE opdateret → bug i prod
+//   15. juni 2026 v3 — Storage Rules opdateret til at matche 4-segment-pattern
+//                       for billeder, plus backward-compat read for legacy
+//                       singular pre-Sprint-C noter.
+//
+// VIGTIGT — Storage Rules path-matching er STRUKTUREL, ikke prefix-baseret.
+// Hver {var} matcher EKSAKT ÉT segment. Når path-skemaet skifter (singular →
+// nested folder), SKAL rules opdateres parallelt — ellers falder requests
+// gennem til catch-all deny.
+//
+// Path-skemaer i brug:
+//   audio/{uid}/{noteId}                       — singular, én audio per note
+//   images/{uid}/{noteId}/{orderIndex}.jpg     — multi-image (Sprint C+, primary)
+//   images/{uid}/{noteId}                      — legacy singular (pre-Sprint-C)
+//
+// Owner-only-pattern: alle læse/skrive operationer kræver at request.auth.uid
+// matcher {uid}-segmentet i path. Cross-user access er blokeret.
+// ─────────────────────────────────────────────────────────────────────────────
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ─── Audio-filer (singular per note) ───
+    // Path: audio/{uid}/{noteId}
+    // Max 50 MB (lange voice-noter), kun audio/* MIME-typer.
+    match /audio/{uid}/{noteId} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null
+                    && request.auth.uid == uid
+                    && request.resource.size < 50 * 1024 * 1024
+                    && request.resource.contentType.matches('audio/.*');
+    }
+
+    // ─── Billede-filer (multi-image, Sprint C+) ───
+    // Path: images/{uid}/{noteId}/{filename}
+    // hvor filename typisk er 0.jpg, 1.jpg, ... op til 5.jpg (max 5 per note,
+    // jf. CameraVoiceScreen-constraint på Android).
+    // Max 10 MB pr. billede, kun image/* MIME-typer.
+    match /images/{uid}/{noteId}/{filename} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null
+                    && request.auth.uid == uid
+                    && request.resource.size < 10 * 1024 * 1024
+                    && request.resource.contentType.matches('image/.*');
+    }
+
+    // ─── Backward-compat: ÆLDRE pre-Sprint-C singular billede-noter ───
+    // Path: images/{uid}/{noteId}  (uden subfolder)
+    // Klienten uploader IKKE her længere, kun read tillades så gamle noter
+    // (typisk fra marts 2026 eller før) fortsat kan vises i app'en.
+    // Kan retires når alle gamle noter er genuploaded eller slettet.
+    match /images/{uid}/{noteId} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      // Ingen write-rule — nye uploads bruger 4-segment-pattern ovenfor
+    }
+
+    // ─── Catch-all: deny everything else ───
+    // Forhindrer at klient kan skrive til root-paths eller fremtidige
+    // collections der ikke er eksplicit defineret ovenfor.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
