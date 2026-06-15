@@ -372,77 +372,133 @@ router.post('/webhook', async (req: Request, res: Response) => {
       // Månedlig fornyelse — opdater tier og nulstil forbrug
       case 'invoice.payment_succeeded': {
         const invoice = event.data.object as Stripe.Invoice
-        const sub = invoice.subscription
-        if (!sub || typeof sub !== 'string') break
 
-        // ─── V1.4 hotfix (1. juni 2026) — flere ændringer for at fixe ───
-        // launch-bug hvor brugere ikke fik counters nulstillet på fornyelse:
+        // ─── V1.4 hotfix #2 (15. juni 2026) — fix #1 var ufuldstændig ───
         //
-        //   1. UID-resolver: subscription.metadata?.uid kan være undefined
-        //      hvis abonnementet er blevet modificeret via Customer Portal
-        //      (downgrade/upgrade kan miste metadata). Fall back til Firestore-
-        //      lookup via stripeCustomerId hvis metadata.uid mangler.
+        // Forrige fix (1. juni 2026) brugte invoice.subscription som primary
+        // og brak silent ud hvis feltet var undefined. Det viste sig at være
+        // præcis hvad der skete: i nyere Stripe API-versioner (2026-04-22.dahlia+)
+        // er invoice.subscription deprecated til fordel for
+        // invoice.parent.subscription_details.subscription.
+        // Webhook returnerede 200 OK fra catch-all, men reset blev aldrig kørt.
         //
-        //   2. Counter-reset komplet: tilføjet voiceNotes + cameraNotes til
-        //      reset-listen. Counter-refactor (20. maj 2026) introducerede
-        //      brugervendte counters men opdaterede ikke denne handler →
-        //      brugere hittede limits permanent uden reset på renewal.
-        //
-        //   3. storageBytes nulstilles IKKE — den ejes af Cloud Functions
-        //      (onStorageUpload/onStorageDelete) og afspejler faktisk
-        //      Storage-forbrug, ikke billing-cycle.
-        //
-        //   4. Try/catch så vi altid logger fejl + returnerer 200 til Stripe
-        //      (ellers retrier de webhook'en evigt).
-        //
-        //   5. Telemetri-event 'usage_reset_on_invoice' for audit + at kunne
-        //      bygge synthetic monitor senere.
+        // Denne version:
+        //   - PRIMÆR resolver: invoice.customer → users.stripeCustomerId-lookup.
+        //     Customer-id er ALTID til stede på invoice-events, uafhængigt af
+        //     API-version. Mere robust end at jagte subscription-ID.
+        //   - Subscription-retrieve er OPTIONAL — bruges kun til at hente
+        //     friskeste tierId hvis muligt. Falder tilbage til user-doc.tierId
+        //     hvis subscription ikke kan resolves.
+        //   - Diagnostic logging på alle decision-points så vi kan se i Render-
+        //     logs præcis hvilken path der bruges.
+
+        const invoiceId = invoice.id ?? 'ukendt'
+        console.log(
+          `[invoice.payment_succeeded] modtaget invoice=${invoiceId} ` +
+          `amount=${invoice.amount_paid}`
+        )
 
         try {
-          const stripeClient = getStripe()
-          const subscription = await stripeClient.subscriptions.retrieve(sub)
-          const priceId = subscription.items.data[0]?.price?.id
-          const tierId = priceId ? getTierIdFromPriceId(priceId) : subscription.metadata?.tierId
-          const periodEnd = getPeriodEnd(subscription)
+          // ── 1. Resolve customer-ID (altid til stede) ──
+          const customerId = typeof invoice.customer === 'string'
+            ? invoice.customer
+            : invoice.customer?.id
 
-          // ── UID-resolver: metadata først, derefter customer-id-lookup ──
-          let uid: string | undefined = subscription.metadata?.uid
-
-          if (!uid) {
-            const customerId = typeof subscription.customer === 'string'
-              ? subscription.customer
-              : subscription.customer?.id
-
-            if (customerId) {
-              const userSnap = await db.collection('users')
-                .where('stripeCustomerId', '==', customerId)
-                .limit(1)
-                .get()
-              if (!userSnap.empty) {
-                uid = userSnap.docs[0].id
-                console.warn(
-                  `[invoice.payment_succeeded] uid manglede i metadata, ` +
-                  `fundet via stripeCustomerId-lookup: ${uid}`
-                )
-              }
-            }
-          }
-
-          if (!uid || !tierId) {
+          if (!customerId) {
             console.warn(
-              `[invoice.payment_succeeded] kan ikke resolve uid/tierId — ` +
-              `uid=${uid}, tierId=${tierId}, invoice=${invoice.id}`
+              `[invoice.payment_succeeded] manglede customer-id på invoice=${invoiceId} — break`
             )
             break
           }
 
-          // Bug A fix: hvis det allerførste touch er en fornyelse (sjældent men
-          // muligt hvis checkout-eventet droppede), initialisér doc fuldt først.
+          // ── 2. Lookup uid via stripeCustomerId (primær path) ──
+          const userSnap = await db.collection('users')
+            .where('stripeCustomerId', '==', customerId)
+            .limit(1)
+            .get()
+
+          if (userSnap.empty) {
+            console.warn(
+              `[invoice.payment_succeeded] ingen user fundet for ` +
+              `customer=${customerId} invoice=${invoiceId} — break`
+            )
+            break
+          }
+
+          const uid = userSnap.docs[0].id
+          const userData = userSnap.docs[0].data()
+          console.log(
+            `[invoice.payment_succeeded] uid resolved: ${uid} (via customer-id-lookup)`
+          )
+
+          // ── 3. Resolve subscription-ID (multi-path for API-version-kompatibilitet) ──
+          // invoice.subscription (deprecated i nyere versioner)
+          // invoice.parent.subscription_details.subscription (newer Stripe API)
+          // invoice.lines.data[0].subscription (line-item fallback)
+          let subId: string | undefined
+          if (typeof invoice.subscription === 'string') {
+            subId = invoice.subscription
+          } else {
+            const parentSub = (invoice as any).parent?.subscription_details?.subscription
+            if (typeof parentSub === 'string') {
+              subId = parentSub
+            } else {
+              const lineSub = invoice.lines?.data?.[0]?.subscription
+              if (typeof lineSub === 'string') subId = lineSub
+            }
+          }
+
+          // ── 4. Hent tier-info (best-effort — falder tilbage til user-doc) ──
+          let tierId: string | undefined
+          let periodEnd: number | null = null
+
+          if (subId) {
+            try {
+              const stripeClient = getStripe()
+              const subscription = await stripeClient.subscriptions.retrieve(subId)
+              const priceId = subscription.items.data[0]?.price?.id
+              tierId = priceId ? getTierIdFromPriceId(priceId) ?? undefined : subscription.metadata?.tierId
+              periodEnd = getPeriodEnd(subscription)
+              console.log(
+                `[invoice.payment_succeeded] subscription resolved: ` +
+                `sub=${subId} tierId=${tierId}`
+              )
+            } catch (subErr) {
+              console.warn(
+                `[invoice.payment_succeeded] subscription-retrieve fejlede ` +
+                `for sub=${subId}, falder tilbage til user-doc.tierId:`,
+                subErr
+              )
+            }
+          } else {
+            console.warn(
+              `[invoice.payment_succeeded] kunne ikke finde subscription-ID ` +
+              `på invoice=${invoiceId} (nyere API-version?) — bruger user-doc.tierId`
+            )
+          }
+
+          // Fallback: brug eksisterende tier fra user-doc hvis subscription-retrieve fejlede
+          if (!tierId && typeof userData?.tierId === 'string') {
+            tierId = userData.tierId
+            console.log(
+              `[invoice.payment_succeeded] tierId fallback fra user-doc: ${tierId}`
+            )
+          }
+
+          if (!tierId) {
+            console.warn(
+              `[invoice.payment_succeeded] kan ikke resolve tierId for ` +
+              `uid=${uid} invoice=${invoiceId} — break`
+            )
+            break
+          }
+
+          // ── 5. Init user-doc hvis nødvendigt (defensive) ──
           await ensureUserDocInitialized(uid)
 
           const now = Date.now()
 
-          // Opdatér user-doc med tier + period-end
+          // ── 6. Opdatér user-doc med tier + period-end ──
           await db.collection('users').doc(uid).set(
             {
               tierId,
@@ -454,31 +510,28 @@ router.post('/webhook', async (req: Request, res: Response) => {
             { merge: true }
           )
 
-          // Nulstil ALLE bruger-vendte + interne counters. storageBytes BEVARES.
+          // ── 7. Nulstil ALLE counters. storageBytes BEVARES (ejes af Cloud Functions). ──
           await db.collection('users').doc(uid)
             .collection('usage').doc('echolima').set(
               {
-                // Brugervendte counters (counter-refactor 20. maj 2026)
                 voiceNotes: 0,
                 cameraNotes: 0,
-                // Legacy/interne counters (bevares for at sikre ingen stale-state
-                // i caches eller event-aggregations)
                 transcriptions: 0,
                 visionCalls: 0,
                 aiSummaries: 0,
                 resetAt: now
-                // storageBytes: BEVARES — ejes af Cloud Functions, ikke billing-cycle
+                // storageBytes: bevidst udeladt
               },
               { merge: true }
             )
 
-          // Telemetri-event til audit + fremtidig synthetic monitor
+          // ── 8. Telemetri-event (best-effort — failure her må ikke blokere) ──
           try {
             await db.collection('events').add({
               uid,
               appId: 'echolima',
               type: 'usage_reset_on_invoice',
-              invoiceId: invoice.id,
+              invoiceId,
               amountPaid: invoice.amount_paid,
               tierId,
               timestamp: now
@@ -491,16 +544,16 @@ router.post('/webhook', async (req: Request, res: Response) => {
           }
 
           console.log(
-            `[invoice.payment_succeeded] Tier fornyet og forbrug nulstillet: ` +
-            `uid=${uid} tier=${tierId} invoice=${invoice.id}`
+            `[invoice.payment_succeeded] ✅ reset gennemført: ` +
+            `uid=${uid} tier=${tierId} invoice=${invoiceId}`
           )
         } catch (err) {
           console.error(
-            `[invoice.payment_succeeded] reset fejlede for invoice=${invoice.id}:`,
+            `[invoice.payment_succeeded] reset fejlede for invoice=${invoiceId}:`,
             err
           )
-          // Vi returnerer alligevel 200 til Stripe (sker via res.json længere nede)
-          // ellers retrier de webhook'en evigt → spammer logs uden at hjælpe
+          // Returner alligevel 200 til Stripe (catch-all længere nede)
+          // — ellers retrier de webhook'en evigt
         }
         break
       }
